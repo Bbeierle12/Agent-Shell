@@ -1,0 +1,100 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["agent-shell contributors"]
+license = "MIT"
+rust-version = "1.78"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# LLM / Agent
+rig-core = { version = "0.6", features = ["derive"] }
+async-openai = "0.27"
+
+# REPL
+rustyline = "14"
+
+# HTTP server
+axum = { version = "0.8", features = ["ws"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout", "auth"] }
+
+# Vector DB
+qdrant-client = "1"
+
+# Embeddings
+fastembed = "4"
+
+# Document parsing
+pdf-extract = "0.7"
+scraper = "0.21"
+comrak = { version = "0.34", default-features = false }
+
+# Sandboxing
+bollard = "0.18"
+
+# Misc
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+schemars = "0.8"
+
+# Workspace crates
+agent-core = { path = "crates/agent-core" }
+agent-tools = { path = "crates/agent-tools" }
+agent-server = { path = "crates/agent-server" }
+
+[package]
+name = "agent-shell"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agent-shell"
+path = "src/main.rs"
+
+[dependencies]
+agent-core = { workspace = true }
+agent-tools = { workspace = true }
+agent-server = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+rustyline = { workspace = true }
+chrono = { workspace = true }
+toml = { workspace = true }
