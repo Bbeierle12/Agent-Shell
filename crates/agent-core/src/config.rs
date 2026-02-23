@@ -133,16 +133,19 @@ pub struct SandboxConfig {
     pub memory_limit: Option<u64>,
     /// Working directory inside the sandbox.
     pub work_dir: String,
+    /// If set, file tools are restricted to paths under this directory.
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
-            mode: SandboxMode::Unsafe,
+            mode: SandboxMode::Docker,
             docker_image: "python:3.12-slim".into(),
             timeout_secs: 30,
             memory_limit: Some(512 * 1024 * 1024), // 512MB
             work_dir: "/workspace".into(),
+            workspace_root: None,
         }
     }
 }

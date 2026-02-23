@@ -110,8 +110,8 @@ pub struct ToolOutput {
 /// Streaming event emitted during agent execution.
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
-    /// A token of the assistant's response.
-    Token(String),
+    /// A chunk of the assistant's response content.
+    ContentChunk(String),
     /// The assistant is calling a tool.
     ToolCallStart { id: String, name: String },
     /// Tool call arguments (may arrive in chunks).

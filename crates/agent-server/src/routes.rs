@@ -35,6 +35,7 @@ struct ChatRequest {
     #[serde(default)]
     stream: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     session_id: Option<String>,
 }
 
@@ -100,7 +101,7 @@ async fn chat_completions(
 
         let stream = UnboundedReceiverStream::new(rx).map(|event| {
             let sse_event: Result<Event, std::convert::Infallible> = match event {
-                AgentEvent::Token(token) => Ok(Event::default()
+                AgentEvent::ContentChunk(token) => Ok(Event::default()
                     .json_data(serde_json::json!({
                         "choices": [{"delta": {"content": token}}]
                     }))

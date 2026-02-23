@@ -1,5 +1,5 @@
 use agent_core::agent_loop::AgentLoop;
-use agent_core::config::AppConfig;
+use agent_core::config::{AppConfig, SandboxMode};
 use agent_core::session::SessionManager;
 use agent_core::tool_registry::ToolRegistry;
 use agent_core::types::{AgentEvent, Message};
@@ -38,6 +38,12 @@ pub async fn run(
         "  Model: {}  |  Endpoint: {}",
         config.provider.model, config.provider.api_base
     );
+
+    // Warn if running in unsafe (unsandboxed) mode.
+    if config.sandbox.mode == SandboxMode::Unsafe {
+        println!("\x1b[1;33m  ⚠  WARNING: Sandbox mode is 'unsafe' — tools execute directly on your system!\x1b[0m");
+        println!("\x1b[1;33m     Set [sandbox] mode = \"docker\" in config for isolated execution.\x1b[0m");
+    }
     println!();
 
     let mut session_manager = SessionManager::new(&config)?;
@@ -137,7 +143,7 @@ pub async fn run(
                 let mut full_response = String::new();
                 while let Some(event) = rx.recv().await {
                     match event {
-                        AgentEvent::Token(token) => {
+                        AgentEvent::ContentChunk(token) => {
                             print!("{}", token);
                             full_response.push_str(&token);
                         }

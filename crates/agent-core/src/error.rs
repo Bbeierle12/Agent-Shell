@@ -32,6 +32,9 @@ pub enum AgentError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    #[error("Schema build error: {0}")]
+    Schema(String),
+
     #[error("Cancelled by user")]
     Cancelled,
 

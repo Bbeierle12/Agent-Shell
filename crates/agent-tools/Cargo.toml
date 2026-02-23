@@ -16,6 +16,5 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 reqwest = { workspace = true }
-schemars = { workspace = true }
-bollard = { workspace = true }
+url = { workspace = true }
 uuid = { workspace = true }

@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 use crate::error::AgentError;
 use crate::tool_registry::{schemas_to_openai_tools, ToolRegistry};
-use crate::types::{AgentEvent, Message, Role, ToolCall};
+use crate::types::{AgentEvent, Message, Role, ToolCall, ToolOutput};
 
 use async_openai::config::OpenAIConfig;
 use async_openai::types::{
@@ -12,6 +12,7 @@ use async_openai::types::{
     FunctionObjectArgs,
 };
 use async_openai::Client;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -62,6 +63,9 @@ impl AgentLoop {
         );
         let openai_tools = schemas_to_openai_tools(&tool_schemas);
 
+        // Build the set of allowed tool names for runtime policy enforcement.
+        let allowed_tools: HashSet<String> = tool_schemas.iter().map(|s| s.name.clone()).collect();
+
         // Build the running message list (we'll extend it with tool results).
         let mut running_messages = self.build_openai_messages(messages)?;
         let mut iteration = 0;
@@ -81,26 +85,25 @@ impl AgentLoop {
                 .model(&self.config.provider.model)
                 .messages(running_messages.clone())
                 .temperature(self.config.provider.temperature)
-                .max_completion_tokens(self.config.provider.max_tokens as u32);
+                .max_completion_tokens(self.config.provider.max_tokens);
 
             if !openai_tools.is_empty() {
                 let tools: Vec<_> = tool_schemas
                     .iter()
                     .map(|s| {
+                        let func = FunctionObjectArgs::default()
+                            .name(&s.name)
+                            .description(&s.description)
+                            .parameters(s.parameters.clone())
+                            .build()
+                            .map_err(|e| AgentError::Schema(format!("function '{}': {}", s.name, e)))?;
                         ChatCompletionToolArgs::default()
                             .r#type(ChatCompletionToolType::Function)
-                            .function(
-                                FunctionObjectArgs::default()
-                                    .name(&s.name)
-                                    .description(&s.description)
-                                    .parameters(s.parameters.clone())
-                                    .build()
-                                    .unwrap(),
-                            )
+                            .function(func)
                             .build()
-                            .unwrap()
+                            .map_err(|e| AgentError::Schema(format!("tool '{}': {}", s.name, e)))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, _>>()?;
                 request_builder.tools(tools);
             }
 
@@ -129,7 +132,7 @@ impl AgentLoop {
                 if !tool_calls.is_empty() {
                     // Send content tokens if any.
                     if !content.is_empty() {
-                        let _ = event_tx.send(AgentEvent::Token(content.clone()));
+                        let _ = event_tx.send(AgentEvent::ContentChunk(content.clone()));
                     }
 
                     // Add assistant's message with tool calls to running history.
@@ -159,10 +162,36 @@ impl AgentLoop {
                             name: tc.name.clone(),
                         });
 
-                        let args: serde_json::Value =
-                            serde_json::from_str(&tc.arguments).unwrap_or(serde_json::json!({}));
-                        let output =
-                            self.tool_registry.execute(&tc.name, &tc.id, args).await;
+                        // Policy enforcement: reject tools not in the allowed set.
+                        let output = if !allowed_tools.contains(&tc.name) {
+                            ToolOutput {
+                                tool_call_id: tc.id.clone(),
+                                content: format!("Tool not allowed: {}", tc.name),
+                                is_error: true,
+                            }
+                        } else {
+                            // Parse arguments, returning an error to the model on failure.
+                            let args: serde_json::Value = match serde_json::from_str(&tc.arguments) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    let err_output = ToolOutput {
+                                        tool_call_id: tc.id.clone(),
+                                        content: format!("Invalid JSON arguments: {}", e),
+                                        is_error: true,
+                                    };
+                                    let _ = event_tx.send(AgentEvent::ToolResult(err_output.clone()));
+                                    let tool_msg = ChatCompletionRequestToolMessageArgs::default()
+                                        .tool_call_id(&tc.id)
+                                        .content(&*err_output.content)
+                                        .build()
+                                        .map_err(|e| AgentError::Provider(e.to_string()))?;
+                                    running_messages.push(ChatCompletionRequestMessage::Tool(tool_msg));
+                                    tool_outputs.push(err_output);
+                                    continue;
+                                }
+                            };
+                            self.tool_registry.execute(&tc.name, &tc.id, args).await
+                        };
 
                         let _ = event_tx.send(AgentEvent::ToolResult(output.clone()));
 
@@ -184,7 +213,7 @@ impl AgentLoop {
 
             // No tool calls — this is the final text response.
             if !content.is_empty() {
-                let _ = event_tx.send(AgentEvent::Token(content.clone()));
+                let _ = event_tx.send(AgentEvent::ContentChunk(content.clone()));
             }
 
             let final_message = Message::assistant(&content);

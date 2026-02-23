@@ -36,7 +36,6 @@ clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # LLM / Agent
-rig-core = { version = "0.6", features = ["derive"] }
 async-openai = "0.27"
 
 # REPL
@@ -47,25 +46,13 @@ axum = { version = "0.8", features = ["ws"] }
 tower = { version = "0.5", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "timeout", "auth"] }
 
-# Vector DB
-qdrant-client = "1"
-
-# Embeddings
-fastembed = "4"
-
-# Document parsing
-pdf-extract = "0.7"
-scraper = "0.21"
-comrak = { version = "0.34", default-features = false }
-
-# Sandboxing
-bollard = "0.18"
+# URL parsing
+url = "2"
 
 # Misc
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
-schemars = "0.8"
 
 # Workspace crates
 agent-core = { path = "crates/agent-core" }

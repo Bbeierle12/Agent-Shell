@@ -20,6 +20,5 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
-schemars = { workspace = true }
 reqwest = { workspace = true }
 async-openai = { workspace = true }

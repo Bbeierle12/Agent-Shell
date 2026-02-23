@@ -3,11 +3,81 @@ use agent_core::tool_registry::Tool;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Validate that a path is within the allowed workspace root.
+/// Returns the canonicalized absolute path if valid.
+fn validate_path(raw: &str, workspace_root: &Option<PathBuf>) -> Result<PathBuf, AgentError> {
+    let root = match workspace_root {
+        Some(r) => r,
+        None => return Ok(PathBuf::from(raw)), // No restriction
+    };
+
+    // Make path absolute.
+    let abs = if Path::new(raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(raw)
+    };
+
+    // Canonicalize what exists; for non-existent paths walk up to find an
+    // existing ancestor and append the remaining components.
+    let canonical = if abs.exists() {
+        abs.canonicalize().map_err(|e| AgentError::ToolExecution {
+            tool_name: "file_ops".into(),
+            message: format!("Failed to canonicalize path: {}", e),
+        })?
+    } else {
+        // Walk up until we find an existing ancestor.
+        let mut existing = abs.as_path();
+        let mut tail = Vec::new();
+        loop {
+            if existing.exists() {
+                break;
+            }
+            if let Some(file_name) = existing.file_name() {
+                tail.push(file_name.to_owned());
+                existing = existing.parent().unwrap_or(Path::new("/"));
+            } else {
+                break;
+            }
+        }
+        let mut canon = existing.canonicalize().map_err(|e| AgentError::ToolExecution {
+            tool_name: "file_ops".into(),
+            message: format!("Failed to canonicalize path: {}", e),
+        })?;
+        for component in tail.into_iter().rev() {
+            canon.push(component);
+        }
+        canon
+    };
+
+    let canon_root = root.canonicalize().map_err(|e| AgentError::ToolExecution {
+        tool_name: "file_ops".into(),
+        message: format!("Failed to canonicalize workspace_root: {}", e),
+    })?;
+
+    if !canonical.starts_with(&canon_root) {
+        return Err(AgentError::ToolExecution {
+            tool_name: "file_ops".into(),
+            message: format!(
+                "Path '{}' is outside the workspace root '{}'",
+                canonical.display(),
+                canon_root.display()
+            ),
+        });
+    }
+
+    Ok(canonical)
+}
 
 // ── file_read ──────────────────────────────────────────────────────────
 
-pub struct FileReadTool;
+pub struct FileReadTool {
+    pub workspace_root: Option<PathBuf>,
+}
 
 #[async_trait]
 impl Tool for FileReadTool {
@@ -55,7 +125,9 @@ impl Tool for FileReadTool {
             }
         })?;
 
-        let content = tokio::fs::read_to_string(&args.path).await.map_err(|e| {
+        let validated_path = validate_path(&args.path, &self.workspace_root)?;
+
+        let content = tokio::fs::read_to_string(&validated_path).await.map_err(|e| {
             AgentError::ToolExecution {
                 tool_name: "file_read".into(),
                 message: format!("Failed to read {}: {}", args.path, e),
@@ -82,7 +154,9 @@ impl Tool for FileReadTool {
 
 // ── file_write ─────────────────────────────────────────────────────────
 
-pub struct FileWriteTool;
+pub struct FileWriteTool {
+    pub workspace_root: Option<PathBuf>,
+}
 
 #[async_trait]
 impl Tool for FileWriteTool {
@@ -131,8 +205,9 @@ impl Tool for FileWriteTool {
             }
         })?;
 
-        let path = Path::new(&args.path);
-        if let Some(parent) = path.parent() {
+        let validated_path = validate_path(&args.path, &self.workspace_root)?;
+
+        if let Some(parent) = validated_path.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(|e| {
                 AgentError::ToolExecution {
                     tool_name: "file_write".into(),
@@ -146,7 +221,7 @@ impl Tool for FileWriteTool {
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&args.path)
+                .open(&validated_path)
                 .await
                 .map_err(|e| AgentError::ToolExecution {
                     tool_name: "file_write".into(),
@@ -159,7 +234,7 @@ impl Tool for FileWriteTool {
                 }
             })?;
         } else {
-            tokio::fs::write(&args.path, &args.content).await.map_err(|e| {
+            tokio::fs::write(&validated_path, &args.content).await.map_err(|e| {
                 AgentError::ToolExecution {
                     tool_name: "file_write".into(),
                     message: format!("Failed to write {}: {}", args.path, e),
@@ -174,7 +249,9 @@ impl Tool for FileWriteTool {
 
 // ── file_list ──────────────────────────────────────────────────────────
 
-pub struct FileListTool;
+pub struct FileListTool {
+    pub workspace_root: Option<PathBuf>,
+}
 
 #[async_trait]
 impl Tool for FileListTool {
@@ -222,10 +299,13 @@ impl Tool for FileListTool {
             }
         })?;
 
+        let validated_path = validate_path(&args.path, &self.workspace_root)?;
+        let path_str = validated_path.to_string_lossy().to_string();
+
         if args.recursive {
-            list_recursive(&args.path, &args.path).await
+            list_recursive(&path_str, &path_str).await
         } else {
-            list_flat(&args.path).await
+            list_flat(&path_str).await
         }
     }
 }
