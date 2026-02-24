@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*"]
+exclude = ["crates/agent-ui"]
 resolver = "2"
 
 [workspace.package]

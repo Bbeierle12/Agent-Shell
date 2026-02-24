@@ -96,10 +96,15 @@ async fn chat_completions(
         let agent_loop = state.agent_loop.clone();
         let session_manager = state.session_manager.clone();
         tokio::spawn(async move {
-            let result = agent_loop.run(&messages, None, &[], tx).await;
-            if let Ok(msg) = result {
-                let mut sm = session_manager.write().await;
-                let _ = sm.push_message(msg);
+            let result = agent_loop.run(&messages, None, &[], tx.clone()).await;
+            match result {
+                Ok(msg) => {
+                    let mut sm = session_manager.write().await;
+                    let _ = sm.push_message(msg);
+                }
+                Err(e) => {
+                    let _ = tx.send(AgentEvent::Error(e.to_string()));
+                }
             }
         });
 
