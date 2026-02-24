@@ -9,10 +9,7 @@ pub enum AgentError {
     Provider(String),
 
     #[error("Tool execution error: {tool_name}: {message}")]
-    ToolExecution {
-        tool_name: String,
-        message: String,
-    },
+    ToolExecution { tool_name: String, message: String },
 
     #[error("Tool not found: {0}")]
     ToolNotFound(String),

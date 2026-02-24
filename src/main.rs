@@ -80,9 +80,7 @@ async fn main() -> Result<()> {
     let filter = if cli.verbose {
         EnvFilter::new("debug")
     } else {
-        EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "agent_shell=info,warn".into()),
-        )
+        EnvFilter::new(std::env::var("RUST_LOG").unwrap_or_else(|_| "agent_shell=info,warn".into()))
     };
     tracing_subscriber::fmt()
         .with_env_filter(filter)

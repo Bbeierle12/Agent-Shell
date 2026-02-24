@@ -57,10 +57,9 @@ impl AgentLoop {
         session_tool_denylist: &[String],
         event_tx: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<Message, AgentError> {
-        let tool_schemas = self.tool_registry.schemas(
-            session_tool_allowlist,
-            session_tool_denylist,
-        );
+        let tool_schemas = self
+            .tool_registry
+            .schemas(session_tool_allowlist, session_tool_denylist);
         let openai_tools = schemas_to_openai_tools(&tool_schemas);
 
         // Build the set of allowed tool names for runtime policy enforcement.
@@ -73,7 +72,10 @@ impl AgentLoop {
         loop {
             iteration += 1;
             if iteration > MAX_TOOL_ITERATIONS {
-                warn!("Hit max tool iterations ({}), forcing text response", MAX_TOOL_ITERATIONS);
+                warn!(
+                    "Hit max tool iterations ({}), forcing text response",
+                    MAX_TOOL_ITERATIONS
+                );
                 break;
             }
 
@@ -96,7 +98,9 @@ impl AgentLoop {
                             .description(&s.description)
                             .parameters(s.parameters.clone())
                             .build()
-                            .map_err(|e| AgentError::Schema(format!("function '{}': {}", s.name, e)))?;
+                            .map_err(|e| {
+                                AgentError::Schema(format!("function '{}': {}", s.name, e))
+                            })?;
                         ChatCompletionToolArgs::default()
                             .r#type(ChatCompletionToolType::Function)
                             .function(func)
@@ -171,7 +175,8 @@ impl AgentLoop {
                             }
                         } else {
                             // Parse arguments, returning an error to the model on failure.
-                            let args: serde_json::Value = match serde_json::from_str(&tc.arguments) {
+                            let args: serde_json::Value = match serde_json::from_str(&tc.arguments)
+                            {
                                 Ok(v) => v,
                                 Err(e) => {
                                     let err_output = ToolOutput {
@@ -179,13 +184,15 @@ impl AgentLoop {
                                         content: format!("Invalid JSON arguments: {}", e),
                                         is_error: true,
                                     };
-                                    let _ = event_tx.send(AgentEvent::ToolResult(err_output.clone()));
+                                    let _ =
+                                        event_tx.send(AgentEvent::ToolResult(err_output.clone()));
                                     let tool_msg = ChatCompletionRequestToolMessageArgs::default()
                                         .tool_call_id(&tc.id)
                                         .content(&*err_output.content)
                                         .build()
                                         .map_err(|e| AgentError::Provider(e.to_string()))?;
-                                    running_messages.push(ChatCompletionRequestMessage::Tool(tool_msg));
+                                    running_messages
+                                        .push(ChatCompletionRequestMessage::Tool(tool_msg));
                                     tool_outputs.push(err_output);
                                     continue;
                                 }

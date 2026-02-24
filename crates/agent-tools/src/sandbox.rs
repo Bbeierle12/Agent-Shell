@@ -90,12 +90,7 @@ impl SandboxExecutor {
     /// Run a command inside a Docker container using `docker run`.
     /// Uses the CLI for simplicity in MVP; can migrate to bollard for streaming later.
     async fn docker_run(&self, cmd: &[&str]) -> Result<ExecResult, AgentError> {
-        let mut docker_args = vec![
-            "run",
-            "--rm",
-            "--network=none",
-            "--read-only",
-        ];
+        let mut docker_args = vec!["run", "--rm", "--network=none", "--read-only"];
 
         let mem_str;
         if let Some(mem) = self.memory_limit {

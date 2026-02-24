@@ -90,9 +90,7 @@ async fn chat_completions(
         let agent_loop = state.agent_loop.clone();
         let session_manager = state.session_manager.clone();
         tokio::spawn(async move {
-            let result = agent_loop
-                .run(&messages, None, &[], tx)
-                .await;
+            let result = agent_loop.run(&messages, None, &[], tx).await;
             if let Ok(msg) = result {
                 let mut sm = session_manager.write().await;
                 let _ = sm.push_message(msg);
@@ -119,9 +117,7 @@ async fn chat_completions(
                     }))
                     .unwrap()),
                 AgentEvent::Done(_) => Ok(Event::default().data("[DONE]")),
-                AgentEvent::Error(e) => Ok(Event::default()
-                    .event("error")
-                    .data(e)),
+                AgentEvent::Error(e) => Ok(Event::default().event("error").data(e)),
                 _ => Ok(Event::default().comment("ping")),
             };
             sse_event
@@ -163,8 +159,7 @@ async fn chat_completions(
 // ── Sessions ────────────────────────────────────────────────────────────
 
 pub fn session_routes() -> Router<AppState> {
-    Router::new()
-        .route("/v1/sessions", get(list_sessions).post(create_session))
+    Router::new().route("/v1/sessions", get(list_sessions).post(create_session))
 }
 
 #[derive(Debug, Serialize)]
@@ -175,9 +170,7 @@ struct SessionInfo {
     updated_at: String,
 }
 
-async fn list_sessions(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn list_sessions(State(state): State<AppState>) -> impl IntoResponse {
     let sm = state.session_manager.read().await;
     let sessions: Vec<SessionInfo> = sm
         .list_sessions()

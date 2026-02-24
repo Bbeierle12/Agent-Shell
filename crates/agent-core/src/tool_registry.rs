@@ -57,11 +57,7 @@ impl ToolRegistry {
 
     /// Get the tool schemas for all registered tools, suitable for sending to the model.
     /// Optionally filtered by an allowlist and denylist.
-    pub fn schemas(
-        &self,
-        allowlist: Option<&[String]>,
-        denylist: &[String],
-    ) -> Vec<ToolSchema> {
+    pub fn schemas(&self, allowlist: Option<&[String]>, denylist: &[String]) -> Vec<ToolSchema> {
         self.tools
             .values()
             .filter(|t| {
@@ -83,12 +79,7 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name with the given arguments.
-    pub async fn execute(
-        &self,
-        tool_name: &str,
-        tool_call_id: &str,
-        args: Value,
-    ) -> ToolOutput {
+    pub async fn execute(&self, tool_name: &str, tool_call_id: &str, args: Value) -> ToolOutput {
         match self.tools.get(tool_name) {
             Some(tool) => match tool.execute(args).await {
                 Ok(content) => ToolOutput {

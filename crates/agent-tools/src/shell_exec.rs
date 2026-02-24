@@ -46,11 +46,10 @@ impl Tool for ShellExecTool {
         struct Args {
             command: String,
         }
-        let args: Args = serde_json::from_value(args)
-            .map_err(|e| AgentError::ToolExecution {
-                tool_name: "shell_exec".into(),
-                message: format!("Invalid arguments: {}", e),
-            })?;
+        let args: Args = serde_json::from_value(args).map_err(|e| AgentError::ToolExecution {
+            tool_name: "shell_exec".into(),
+            message: format!("Invalid arguments: {}", e),
+        })?;
 
         let result = self.executor.exec_shell(&args.command).await?;
         Ok(result.to_display_string())

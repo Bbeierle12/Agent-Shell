@@ -16,8 +16,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(config: AppConfig, tool_registry: Arc<ToolRegistry>) -> Self {
-        let session_manager = SessionManager::new(&config)
-            .expect("Failed to initialize session manager");
+        let session_manager =
+            SessionManager::new(&config).expect("Failed to initialize session manager");
         let agent_loop = AgentLoop::new(config.clone(), tool_registry.clone());
 
         Self {

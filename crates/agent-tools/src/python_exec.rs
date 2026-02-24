@@ -47,11 +47,9 @@ impl Tool for PythonExecTool {
         struct Args {
             code: String,
         }
-        let args: Args = serde_json::from_value(args).map_err(|e| {
-            AgentError::ToolExecution {
-                tool_name: "python_exec".into(),
-                message: format!("Invalid arguments: {}", e),
-            }
+        let args: Args = serde_json::from_value(args).map_err(|e| AgentError::ToolExecution {
+            tool_name: "python_exec".into(),
+            message: format!("Invalid arguments: {}", e),
         })?;
 
         let result = self.executor.exec_python(&args.code).await?;

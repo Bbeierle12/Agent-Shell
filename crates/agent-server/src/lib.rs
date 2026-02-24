@@ -48,7 +48,10 @@ pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .merge(routes::chat_routes())
         .merge(routes::session_routes())
-        .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ));
 
     // Public routes (health) — never require auth.
     let public = Router::new().merge(routes::health_routes());
@@ -66,10 +69,7 @@ pub fn build_router(state: AppState) -> Router {
         let cors = if config.server.auth_token.is_some() {
             // Restrictive CORS when auth is enabled.
             CorsLayer::new()
-                .allow_methods([
-                    axum::http::Method::GET,
-                    axum::http::Method::POST,
-                ])
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
                 .allow_headers([
                     axum::http::header::CONTENT_TYPE,
                     axum::http::header::AUTHORIZATION,
@@ -101,4 +101,112 @@ pub async fn serve(config: AppConfig, tool_registry: Arc<ToolRegistry>) -> anyho
     axum::serve(listener, router).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    /// Build a test router with the given auth token and a temp session dir.
+    fn test_router(auth_token: Option<String>) -> Router {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = AppConfig::default();
+        config.server.auth_token = auth_token;
+        config.session.history_dir = Some(tmp.path().to_path_buf());
+        // Keep the TempDir alive by leaking it (tests are short-lived).
+        std::mem::forget(tmp);
+
+        let registry = Arc::new(ToolRegistry::new());
+        let state = AppState::new(config, registry);
+        build_router(state)
+    }
+
+    #[tokio::test]
+    async fn test_health_no_auth_required() {
+        let app = test_router(Some("secret-token".into()));
+
+        let req = Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_protected_route_rejects_without_token() {
+        let app = test_router(Some("secret-token".into()));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_protected_route_rejects_wrong_token() {
+        let app = test_router(Some("secret-token".into()));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer wrong-token")
+            .body(Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_protected_route_accepts_correct_token() {
+        let app = test_router(Some("secret-token".into()));
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer secret-token")
+            .body(Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // Should NOT be 401 — the auth layer passed.
+        // It may be 500 (no LLM backend) but that's fine for this test.
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_no_auth_allows_all() {
+        let app = test_router(None);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // Without auth configured, requests should pass through (not 401).
+        assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
 }

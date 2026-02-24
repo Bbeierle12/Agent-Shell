@@ -40,7 +40,10 @@ impl Message {
         }
     }
 
-    pub fn assistant_with_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+    pub fn assistant_with_tool_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             role: Role::Assistant,

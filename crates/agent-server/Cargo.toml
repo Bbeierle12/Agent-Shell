@@ -21,3 +21,9 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+hyper = "1"
+tokio = { workspace = true }
+tempfile = { workspace = true }

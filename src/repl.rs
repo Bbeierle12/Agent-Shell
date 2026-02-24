@@ -5,7 +5,7 @@ use agent_core::tool_registry::ToolRegistry;
 use agent_core::types::{AgentEvent, Message};
 use anyhow::Result;
 use rustyline::error::ReadlineError;
-use rustyline::{DefaultEditor, Config as RlConfig};
+use rustyline::{Config as RlConfig, DefaultEditor};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -54,9 +54,7 @@ pub async fn run(
     let agent_loop = AgentLoop::new(config.clone(), tool_registry.clone());
 
     // Set up rustyline.
-    let rl_config = RlConfig::builder()
-        .auto_add_history(true)
-        .build();
+    let rl_config = RlConfig::builder().auto_add_history(true).build();
     let history_path = AppConfig::data_dir().join("repl_history.txt");
     let mut rl = DefaultEditor::with_config(rl_config)?;
     let _ = rl.load_history(&history_path);
@@ -77,12 +75,8 @@ pub async fn run(
 
                 // Handle slash commands.
                 if input.starts_with('/') {
-                    let handled = handle_command(
-                        input,
-                        &mut session_manager,
-                        &tool_registry,
-                        &config,
-                    )?;
+                    let handled =
+                        handle_command(input, &mut session_manager, &tool_registry, &config)?;
                     if !handled {
                         break; // /exit
                     }
@@ -126,12 +120,7 @@ pub async fn run(
                         async move {
                             let agent = AgentLoop::new(config, tool_registry);
                             agent
-                                .run(
-                                    &messages,
-                                    allowlist.as_deref(),
-                                    &denylist,
-                                    tx,
-                                )
+                                .run(&messages, allowlist.as_deref(), &denylist, tx)
                                 .await
                         }
                     })
@@ -316,7 +305,10 @@ fn handle_command(
             println!("  /exit          — Quit");
         }
         _ => {
-            println!("Unknown command: {}. Type /help for available commands.", cmd);
+            println!(
+                "Unknown command: {}. Type /help for available commands.",
+                cmd
+            );
         }
     }
 

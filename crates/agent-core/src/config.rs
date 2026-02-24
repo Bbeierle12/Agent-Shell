@@ -258,4 +258,22 @@ mod tests {
         assert_eq!(parsed.provider.model, config.provider.model);
         assert_eq!(parsed.provider.max_tokens, config.provider.max_tokens);
     }
+
+    #[test]
+    fn test_config_without_workspace_root() {
+        // A TOML config that does not mention workspace_root should
+        // deserialize with workspace_root = None (backward compat).
+        let toml_str = r#"
+[sandbox]
+mode = "docker"
+timeout_secs = 30
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.sandbox.workspace_root.is_none());
+    }
+
+    #[test]
+    fn test_default_sandbox_mode_is_docker() {
+        assert_eq!(SandboxConfig::default().mode, SandboxMode::Docker);
+    }
 }
