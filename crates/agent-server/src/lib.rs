@@ -97,7 +97,12 @@ pub async fn serve(
     plugin_registry: Arc<tokio::sync::RwLock<agent_plugins::PluginRegistry>>,
     skill_indexer: Arc<agent_skills::SkillIndexer>,
 ) -> anyhow::Result<()> {
-    let state = AppState::new(config.clone(), tool_registry, plugin_registry, skill_indexer)?;
+    let state = AppState::new(
+        config.clone(),
+        tool_registry,
+        plugin_registry,
+        skill_indexer,
+    )?;
     let router = build_router(state);
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -131,8 +136,11 @@ mod tests {
         std::mem::forget(tmp);
 
         let registry = Arc::new(ToolRegistry::new());
-        let plugin_registry = Arc::new(tokio::sync::RwLock::new(agent_plugins::PluginRegistry::new()));
-        let state = AppState::new(config, registry, plugin_registry, skill_indexer).expect("Failed to create test app state");
+        let plugin_registry = Arc::new(tokio::sync::RwLock::new(
+            agent_plugins::PluginRegistry::new(),
+        ));
+        let state = AppState::new(config, registry, plugin_registry, skill_indexer)
+            .expect("Failed to create test app state");
         build_router(state)
     }
 

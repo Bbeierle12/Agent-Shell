@@ -68,9 +68,7 @@ pub fn validate_meta(meta: &SkillMeta) -> Result<(), Vec<String>> {
 }
 
 /// Validate all skills and check file structure.
-pub fn validate_skills(
-    indexer: &crate::indexer::SkillIndexer,
-) -> ValidationResult {
+pub fn validate_skills(indexer: &crate::indexer::SkillIndexer) -> ValidationResult {
     let index = indexer.get_skill_index();
     let mut result = ValidationResult::pass(index.len());
 

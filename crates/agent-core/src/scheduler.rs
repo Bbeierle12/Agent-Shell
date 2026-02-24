@@ -211,9 +211,10 @@ impl Scheduler {
                     ScheduleTaskType::Prompt => ScheduledTask::Prompt {
                         schedule_name: config.name.clone(),
                         workspace,
-                        prompt: config.prompt.clone().unwrap_or_else(|| {
-                            "Perform your scheduled task.".to_string()
-                        }),
+                        prompt: config
+                            .prompt
+                            .clone()
+                            .unwrap_or_else(|| "Perform your scheduled task.".to_string()),
                     },
                     ScheduleTaskType::Custom => ScheduledTask::Custom {
                         schedule_name: config.name.clone(),
@@ -368,15 +369,14 @@ mod tests {
         let mut scheduler = Scheduler::new(configs, tmp.path().to_path_buf());
 
         // Force next_run to the past so tick fires it.
-        scheduler
-            .state
-            .get_mut("test")
-            .unwrap()
-            .next_run = Utc::now() - chrono::Duration::seconds(1);
+        scheduler.state.get_mut("test").unwrap().next_run =
+            Utc::now() - chrono::Duration::seconds(1);
 
         let tasks = scheduler.tick();
         assert_eq!(tasks.len(), 1);
-        assert!(matches!(&tasks[0], ScheduledTask::Prompt { schedule_name, .. } if schedule_name == "test"));
+        assert!(
+            matches!(&tasks[0], ScheduledTask::Prompt { schedule_name, .. } if schedule_name == "test")
+        );
 
         // After firing, next_run should be in the future.
         let state = scheduler.state.get("test").unwrap();
@@ -397,11 +397,8 @@ mod tests {
         let mut scheduler = Scheduler::new(configs, tmp.path().to_path_buf());
 
         // Set next_run to 2 hours ago (simulating missed schedule).
-        scheduler
-            .state
-            .get_mut("missed")
-            .unwrap()
-            .next_run = Utc::now() - chrono::Duration::hours(2);
+        scheduler.state.get_mut("missed").unwrap().next_run =
+            Utc::now() - chrono::Duration::hours(2);
 
         let tasks = scheduler.tick();
         assert_eq!(tasks.len(), 1);
@@ -426,11 +423,8 @@ mod tests {
         let mut scheduler = Scheduler::new(configs, tmp.path().to_path_buf());
 
         // Force next_run to the past.
-        scheduler
-            .state
-            .get_mut("disabled")
-            .unwrap()
-            .next_run = Utc::now() - chrono::Duration::seconds(1);
+        scheduler.state.get_mut("disabled").unwrap().next_run =
+            Utc::now() - chrono::Duration::seconds(1);
 
         let tasks = scheduler.tick();
         assert!(tasks.is_empty());
@@ -458,15 +452,14 @@ mod tests {
         assert!(scheduler.parsed[1].is_some());
 
         // Force "good" to fire.
-        scheduler
-            .state
-            .get_mut("good")
-            .unwrap()
-            .next_run = Utc::now() - chrono::Duration::seconds(1);
+        scheduler.state.get_mut("good").unwrap().next_run =
+            Utc::now() - chrono::Duration::seconds(1);
 
         let tasks = scheduler.tick();
         assert_eq!(tasks.len(), 1);
-        assert!(matches!(&tasks[0], ScheduledTask::Prompt { schedule_name, .. } if schedule_name == "good"));
+        assert!(
+            matches!(&tasks[0], ScheduledTask::Prompt { schedule_name, .. } if schedule_name == "good")
+        );
     }
 
     #[test]
@@ -483,11 +476,8 @@ mod tests {
         // First scheduler: fire a task and save state.
         {
             let mut scheduler = Scheduler::new(configs.clone(), state_path.clone());
-            scheduler
-                .state
-                .get_mut("persist")
-                .unwrap()
-                .next_run = Utc::now() - chrono::Duration::seconds(1);
+            scheduler.state.get_mut("persist").unwrap().next_run =
+                Utc::now() - chrono::Duration::seconds(1);
             let tasks = scheduler.tick();
             assert_eq!(tasks.len(), 1);
             assert_eq!(scheduler.state.get("persist").unwrap().run_count, 1);
@@ -525,11 +515,8 @@ mod tests {
         )];
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let mut scheduler = Scheduler::new(configs, tmp.path().to_path_buf());
-        scheduler
-            .state
-            .get_mut("past")
-            .unwrap()
-            .next_run = Utc::now() - chrono::Duration::seconds(10);
+        scheduler.state.get_mut("past").unwrap().next_run =
+            Utc::now() - chrono::Duration::seconds(10);
 
         let wait = scheduler.time_until_next_fire();
         assert_eq!(wait.as_millis(), 0);
@@ -545,11 +532,7 @@ mod tests {
         )];
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let mut scheduler = Scheduler::new(configs, tmp.path().to_path_buf());
-        scheduler
-            .state
-            .get_mut("hb")
-            .unwrap()
-            .next_run = Utc::now() - chrono::Duration::seconds(1);
+        scheduler.state.get_mut("hb").unwrap().next_run = Utc::now() - chrono::Duration::seconds(1);
 
         let tasks = scheduler.tick();
         assert_eq!(tasks.len(), 1);

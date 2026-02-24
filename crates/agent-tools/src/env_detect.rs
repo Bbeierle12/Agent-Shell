@@ -288,10 +288,7 @@ impl Tool for EnvDetectTool {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         if !dir.is_dir() {
-            return Err(Self::err(format!(
-                "Not a directory: {}",
-                dir.display()
-            )));
+            return Err(Self::err(format!("Not a directory: {}", dir.display())));
         }
 
         let mut output = String::new();

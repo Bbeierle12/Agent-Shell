@@ -170,10 +170,8 @@ mod tests {
             serde_json::json!({}),
         ))
         .unwrap();
-        let error_event = AgentEvent::new(
-            AgentEventType::Error,
-            serde_json::json!({"msg": "timeout"}),
-        );
+        let error_event =
+            AgentEvent::new(AgentEventType::Error, serde_json::json!({"msg": "timeout"}));
         let error_id = error_event.id;
         bus.publish(error_event).unwrap();
 

@@ -1,7 +1,7 @@
 mod repl;
 
 use agent_core::config::AppConfig;
-use agent_core::scheduler::{Scheduler, ScheduledTask};
+use agent_core::scheduler::{ScheduledTask, Scheduler};
 use agent_core::tool_registry::ToolRegistry;
 use agent_plugins::PluginRegistry;
 use agent_skills::SkillIndexer;

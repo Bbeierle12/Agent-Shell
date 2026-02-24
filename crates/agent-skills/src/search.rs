@@ -120,11 +120,7 @@ impl SearchService {
             }
         }
 
-        debug!(
-            "Skill search '{}' found {} results",
-            query,
-            results.len()
-        );
+        debug!("Skill search '{}' found {} results", query, results.len());
 
         SearchResults::new(query.to_string(), results, options.limit)
     }
@@ -177,11 +173,7 @@ impl SearchService {
             results.push(result);
         }
 
-        debug!(
-            "Content search '{}' found {} results",
-            query,
-            results.len()
-        );
+        debug!("Content search '{}' found {} results", query, results.len());
 
         SearchResults::new(query.to_string(), results, options.limit)
     }
@@ -207,12 +199,7 @@ impl SearchService {
     }
 
     /// Match a skill against search terms.
-    fn match_skill(
-        &self,
-        skill: &SkillMeta,
-        query: &str,
-        terms: &[&str],
-    ) -> Option<SearchResult> {
+    fn match_skill(&self, skill: &SkillMeta, query: &str, terms: &[&str]) -> Option<SearchResult> {
         let name_lower = skill.name.to_lowercase();
         let desc_lower = skill.description.to_lowercase();
 

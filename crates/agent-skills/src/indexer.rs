@@ -136,9 +136,10 @@ impl SkillIndexer {
             content_index,
         };
 
-        *self.index.write().map_err(|e| {
-            IndexError::ReadError(format!("Lock poisoned: {}", e))
-        })? = combined;
+        *self
+            .index
+            .write()
+            .map_err(|e| IndexError::ReadError(format!("Lock poisoned: {}", e)))? = combined;
 
         info!(
             "Index reload complete: {} skills, {} content entries",
@@ -251,9 +252,10 @@ impl SkillIndexer {
 
         // Atomically update the index.
         {
-            let mut index = self.index.write().map_err(|e| {
-                IndexError::ReadError(format!("Lock poisoned: {}", e))
-            })?;
+            let mut index = self
+                .index
+                .write()
+                .map_err(|e| IndexError::ReadError(format!("Lock poisoned: {}", e)))?;
 
             index.skill_index.skills.retain(|s| s.name != name);
             index
@@ -262,10 +264,7 @@ impl SkillIndexer {
                 .retain(|_key, entry| entry.domain != name);
 
             index.skill_index.skills.push(meta);
-            index
-                .skill_index
-                .skills
-                .sort_by(|a, b| a.name.cmp(&b.name));
+            index.skill_index.skills.sort_by(|a, b| a.name.cmp(&b.name));
 
             for entry in content_entries {
                 index.content_index.insert(entry);
@@ -278,9 +277,10 @@ impl SkillIndexer {
 
     /// Remove a skill from the index.
     pub fn remove_skill(&self, name: &str) -> Result<(), IndexError> {
-        let mut index = self.index.write().map_err(|e| {
-            IndexError::ReadError(format!("Lock poisoned: {}", e))
-        })?;
+        let mut index = self
+            .index
+            .write()
+            .map_err(|e| IndexError::ReadError(format!("Lock poisoned: {}", e)))?;
 
         let before_skills = index.skill_index.skills.len();
         let before_content = index.content_index.entries.len();

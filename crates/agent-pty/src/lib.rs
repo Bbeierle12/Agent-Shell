@@ -9,4 +9,4 @@ pub mod shell;
 
 pub use capture::CaptureEvent;
 pub use session::{PtyError, PtySession};
-pub use shell::{detect_available_shells, default_shell, ShellInfo};
+pub use shell::{default_shell, detect_available_shells, ShellInfo};

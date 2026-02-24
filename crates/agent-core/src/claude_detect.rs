@@ -95,8 +95,7 @@ impl ClaudeDetector {
 
                     if Self::is_claude_process(name) {
                         // Try to get the working directory.
-                        let cwd = std::fs::read_link(entry.path().join("cwd"))
-                            .unwrap_or_default();
+                        let cwd = std::fs::read_link(entry.path().join("cwd")).unwrap_or_default();
 
                         let session = ClaudeSession {
                             pid,
@@ -235,9 +234,6 @@ mod tests {
         let json = serde_json::to_string(&session).unwrap();
         let deserialized: ClaudeSession = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.pid, 1234);
-        assert_eq!(
-            deserialized.conversation_id,
-            Some("conv-123".to_string())
-        );
+        assert_eq!(deserialized.conversation_id, Some("conv-123".to_string()));
     }
 }

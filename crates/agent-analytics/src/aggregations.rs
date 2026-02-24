@@ -197,10 +197,8 @@ impl Analytics {
     /// Finalize a daily summary: set top_tools from accumulated day counts.
     pub fn finalize_summary(&mut self, date: NaiveDate) {
         if let Some(day_tools) = self.daily_tool_counts.get(&date) {
-            let mut sorted: Vec<(String, u32)> = day_tools
-                .iter()
-                .map(|(k, v)| (k.clone(), *v))
-                .collect();
+            let mut sorted: Vec<(String, u32)> =
+                day_tools.iter().map(|(k, v)| (k.clone(), *v)).collect();
             sorted.sort_by(|a, b| b.1.cmp(&a.1));
             sorted.truncate(10);
 
@@ -444,13 +442,10 @@ mod tests {
 
     #[test]
     fn test_session_duration() {
-        let session = make_session(
-            "dur",
-            vec![user_msg("a", 0), assistant_msg("b", 120)],
-        );
+        let session = make_session("dur", vec![user_msg("a", 0), assistant_msg("b", 120)]);
         let dur = session_duration(&session);
         // Should be approximately 120 seconds.
-        assert!(dur >= 119 && dur <= 121);
+        assert!((119..=121).contains(&dur));
     }
 
     #[test]
@@ -469,10 +464,7 @@ mod tests {
     fn test_deep_work_sessions() {
         let mut analytics = Analytics::new(5); // 5 minute threshold.
 
-        let short = make_session(
-            "short",
-            vec![user_msg("hi", 0), assistant_msg("bye", 60)],
-        );
+        let short = make_session("short", vec![user_msg("hi", 0), assistant_msg("bye", 60)]);
         let long = make_session(
             "long",
             vec![user_msg("start", 0), assistant_msg("end", 600)],
@@ -490,21 +482,15 @@ mod tests {
     fn test_average_session_duration() {
         let mut analytics = Analytics::default();
 
-        let s1 = make_session(
-            "s1",
-            vec![user_msg("a", 0), assistant_msg("b", 100)],
-        );
-        let s2 = make_session(
-            "s2",
-            vec![user_msg("a", 0), assistant_msg("b", 200)],
-        );
+        let s1 = make_session("s1", vec![user_msg("a", 0), assistant_msg("b", 100)]);
+        let s2 = make_session("s2", vec![user_msg("a", 0), assistant_msg("b", 200)]);
 
         analytics.process_session(&s1);
         analytics.process_session(&s2);
 
         let avg = analytics.average_session_duration().unwrap();
         // Average of ~100 and ~200.
-        assert!(avg >= 149 && avg <= 151);
+        assert!((149..=151).contains(&avg));
     }
 
     #[test]
@@ -532,10 +518,7 @@ mod tests {
     fn test_date_range_summaries() {
         let mut analytics = Analytics::default();
 
-        let session = make_session(
-            "today",
-            vec![user_msg("hi", 0), assistant_msg("hello", 5)],
-        );
+        let session = make_session("today", vec![user_msg("hi", 0), assistant_msg("hello", 5)]);
         analytics.process_session(&session);
 
         let today = chrono::Utc::now().date_naive();

@@ -81,8 +81,13 @@ pub async fn run(
 
                 // Handle slash commands.
                 if input.starts_with('/') {
-                    let handled =
-                        handle_command(input, &mut session_manager, &tool_registry, &skill_indexer, &config)?;
+                    let handled = handle_command(
+                        input,
+                        &mut session_manager,
+                        &tool_registry,
+                        &skill_indexer,
+                        &config,
+                    )?;
                     if !handled {
                         break; // /exit
                     }
@@ -324,7 +329,11 @@ fn handle_command(
                 // Project detection.
                 let mut linker = agent_core::context::ContextLinker::new();
                 if let Some(project) = linker.detect_project(&dir) {
-                    println!("  Project: {} ({})", project.name, project.primary_type().display_name());
+                    println!(
+                        "  Project: {} ({})",
+                        project.name,
+                        project.primary_type().display_name()
+                    );
                     println!("  Path: {}", project.path.display());
                     if let Some(remote) = &project.git_remote {
                         println!("  Git remote: {}", remote);
@@ -354,7 +363,11 @@ fn handle_command(
                 } else {
                     println!("  Environments ({}):", envs.len());
                     for env in &envs {
-                        let ver = env.version.as_deref().map(|v| format!(" v{}", v)).unwrap_or_default();
+                        let ver = env
+                            .version
+                            .as_deref()
+                            .map(|v| format!(" v{}", v))
+                            .unwrap_or_default();
                         println!("    {} — {}{}", env.name, env.env_type, ver);
                     }
                 }
@@ -393,7 +406,12 @@ fn handle_command(
             } else {
                 println!("  Detected shells:");
                 for shell in &shells {
-                    println!("    {} — {} ({})", shell.id, shell.name, shell.path.display());
+                    println!(
+                        "    {} — {} ({})",
+                        shell.id,
+                        shell.name,
+                        shell.path.display()
+                    );
                 }
                 if let Some(default) = agent_pty::default_shell() {
                     println!("  Default: {}", default.id);

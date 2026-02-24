@@ -173,12 +173,7 @@ pub struct ContentIndexEntry {
 
 impl ContentIndexEntry {
     /// Create a new content index entry.
-    pub fn new(
-        domain: String,
-        sub_skill: Option<String>,
-        file: String,
-        content: String,
-    ) -> Self {
+    pub fn new(domain: String, sub_skill: Option<String>, file: String, content: String) -> Self {
         let word_count = content.split_whitespace().count();
         let headings = Self::extract_headings(&content);
         let content_lower = content.to_lowercase();
@@ -612,7 +607,10 @@ mod tests {
         let meta: SkillMeta = serde_json::from_str(json).unwrap();
         assert!(meta.has_sub_skills());
         assert_eq!(meta.sub_skill_names(), vec!["react", "validation"]);
-        assert_eq!(meta.find_sub_skill("react").unwrap().triggers, vec!["useForm"]);
+        assert_eq!(
+            meta.find_sub_skill("react").unwrap().triggers,
+            vec!["useForm"]
+        );
     }
 
     #[test]
