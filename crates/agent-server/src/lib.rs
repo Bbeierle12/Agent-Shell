@@ -44,10 +44,15 @@ use axum::extract::State;
 pub fn build_router(state: AppState) -> Router {
     let config = &state.config;
 
-    // Protected routes (chat, sessions) — require auth when token is configured.
+    // Protected routes (chat, sessions, plugins) — require auth when token is configured.
     let protected = Router::new()
         .merge(routes::chat_routes())
         .merge(routes::session_routes())
+        .merge(routes::plugin_routes())
+        .merge(routes::skill_routes())
+        .merge(routes::terminal_routes())
+        .merge(routes::context_routes())
+        .merge(routes::analytics_routes())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -86,8 +91,13 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 /// Start the HTTP server.
-pub async fn serve(config: AppConfig, tool_registry: Arc<ToolRegistry>) -> anyhow::Result<()> {
-    let state = AppState::new(config.clone(), tool_registry);
+pub async fn serve(
+    config: AppConfig,
+    tool_registry: Arc<ToolRegistry>,
+    plugin_registry: Arc<tokio::sync::RwLock<agent_plugins::PluginRegistry>>,
+    skill_indexer: Arc<agent_skills::SkillIndexer>,
+) -> anyhow::Result<()> {
+    let state = AppState::new(config.clone(), tool_registry, plugin_registry, skill_indexer)?;
     let router = build_router(state);
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -116,11 +126,13 @@ mod tests {
         let mut config = AppConfig::default();
         config.server.auth_token = auth_token;
         config.session.history_dir = Some(tmp.path().to_path_buf());
+        let skill_indexer = Arc::new(agent_skills::SkillIndexer::new(tmp.path().join("skills")));
         // Keep the TempDir alive by leaking it (tests are short-lived).
         std::mem::forget(tmp);
 
         let registry = Arc::new(ToolRegistry::new());
-        let state = AppState::new(config, registry);
+        let plugin_registry = Arc::new(tokio::sync::RwLock::new(agent_plugins::PluginRegistry::new()));
+        let state = AppState::new(config, registry, plugin_registry, skill_indexer).expect("Failed to create test app state");
         build_router(state)
     }
 

@@ -3,6 +3,7 @@ use agent_core::config::{AppConfig, SandboxMode};
 use agent_core::session::SessionManager;
 use agent_core::tool_registry::ToolRegistry;
 use agent_core::types::{AgentEvent, Message};
+use agent_skills::SkillIndexer;
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::{Config as RlConfig, DefaultEditor};
@@ -21,6 +22,10 @@ const BANNER: &str = r#"
     /sessions      — List all sessions
     /switch <id>   — Switch to a session
     /tools         — List available tools
+    /skills        — List loaded skills
+    /context [dir] — Detect project, git, and runtime environments
+    /analytics     — Show session analytics summary
+    /shells        — List detected shells
     /config        — Show current config
     /clear         — Clear current session history
     /help          — Show this help
@@ -31,6 +36,7 @@ const BANNER: &str = r#"
 pub async fn run(
     config: AppConfig,
     tool_registry: Arc<ToolRegistry>,
+    skill_indexer: Arc<SkillIndexer>,
     session_name: Option<String>,
 ) -> Result<()> {
     println!("{}", BANNER);
@@ -51,7 +57,7 @@ pub async fn run(
         session_manager.create_session(name)?;
     }
 
-    let agent_loop = AgentLoop::new(config.clone(), tool_registry.clone());
+    let agent_loop = AgentLoop::new(config.clone(), tool_registry.clone())?;
 
     // Set up rustyline.
     let rl_config = RlConfig::builder().auto_add_history(true).build();
@@ -76,7 +82,7 @@ pub async fn run(
                 // Handle slash commands.
                 if input.starts_with('/') {
                     let handled =
-                        handle_command(input, &mut session_manager, &tool_registry, &config)?;
+                        handle_command(input, &mut session_manager, &tool_registry, &skill_indexer, &config)?;
                     if !handled {
                         break; // /exit
                     }
@@ -118,7 +124,7 @@ pub async fn run(
                         let tool_registry = tool_registry.clone();
                         let config = config.clone();
                         async move {
-                            let agent = AgentLoop::new(config, tool_registry);
+                            let agent = AgentLoop::new(config, tool_registry)?;
                             agent
                                 .run(&messages, allowlist.as_deref(), &denylist, tx)
                                 .await
@@ -206,6 +212,7 @@ fn handle_command(
     input: &str,
     session_manager: &mut SessionManager,
     tool_registry: &ToolRegistry,
+    skill_indexer: &SkillIndexer,
     config: &AppConfig,
 ) -> Result<bool> {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
@@ -280,6 +287,119 @@ fn handle_command(
                 }
             }
         }
+        "/skills" => {
+            let index = skill_indexer.get_skill_index();
+            if index.is_empty() {
+                println!("  No skills loaded.");
+                let skills_dir = AppConfig::data_dir().join("skills");
+                println!("  Skills directory: {}", skills_dir.display());
+            } else {
+                println!("  Loaded skills ({}):", index.len());
+                for skill in &index.skills {
+                    let extras = if skill.has_sub_skills() {
+                        format!(" (sub-skills: {})", skill.sub_skill_names().join(", "))
+                    } else {
+                        String::new()
+                    };
+                    println!("    {} — {}{}", skill.name, skill.description, extras);
+                }
+                if index.has_errors() {
+                    println!("  Warnings:");
+                    for err in &index.validation_errors {
+                        println!("    ! {}", err);
+                    }
+                }
+            }
+        }
+        "/context" => {
+            let dir = if arg.is_empty() {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            } else {
+                std::path::PathBuf::from(arg)
+            };
+
+            if !dir.is_dir() {
+                println!("  Not a directory: {}", dir.display());
+            } else {
+                // Project detection.
+                let mut linker = agent_core::context::ContextLinker::new();
+                if let Some(project) = linker.detect_project(&dir) {
+                    println!("  Project: {} ({})", project.name, project.primary_type().display_name());
+                    println!("  Path: {}", project.path.display());
+                    if let Some(remote) = &project.git_remote {
+                        println!("  Git remote: {}", remote);
+                    }
+                    if let Some(branch) = &project.git_branch {
+                        println!("  Git branch: {}", branch);
+                    }
+                } else {
+                    println!("  Project: (none detected)");
+                }
+
+                // Git context.
+                if let Some(git) = agent_core::context::ContextLinker::get_git_context(&dir) {
+                    if let Some(branch) = &git.branch {
+                        println!("  Branch: {}", branch);
+                    }
+                    if let Some(head) = &git.head_short {
+                        println!("  HEAD: {}", head);
+                    }
+                    println!("  Dirty: {}", if git.is_dirty { "yes" } else { "no" });
+                }
+
+                // Runtime environments.
+                let envs = agent_tools::env_detect::detect_environments(&dir);
+                if envs.is_empty() {
+                    println!("  Environments: (none detected)");
+                } else {
+                    println!("  Environments ({}):", envs.len());
+                    for env in &envs {
+                        let ver = env.version.as_deref().map(|v| format!(" v{}", v)).unwrap_or_default();
+                        println!("    {} — {}{}", env.name, env.env_type, ver);
+                    }
+                }
+            }
+        }
+        "/analytics" => {
+            // Load all sessions and compute analytics.
+            let sessions_dir = config
+                .session
+                .history_dir
+                .clone()
+                .unwrap_or_else(|| agent_core::config::AppConfig::data_dir().join("sessions"));
+
+            let mut all_sessions = Vec::new();
+            let session_list = session_manager.list_sessions();
+            for (id, _, _, _) in &session_list {
+                let path = sessions_dir.join(format!("{}.json", id));
+                if let Ok(session) = agent_core::session::Session::load_from(&path) {
+                    all_sessions.push(session);
+                }
+            }
+
+            if all_sessions.is_empty() {
+                println!("  No sessions to analyze.");
+            } else {
+                let mut analytics = agent_analytics::Analytics::default();
+                analytics.process_sessions(&all_sessions);
+                let summary = agent_analytics::ReportGenerator::text_summary(&analytics);
+                print!("{}", summary);
+            }
+        }
+        "/shells" => {
+            let shells = agent_pty::detect_available_shells();
+            if shells.is_empty() {
+                println!("  No shells detected.");
+            } else {
+                println!("  Detected shells:");
+                for shell in &shells {
+                    println!("    {} — {} ({})", shell.id, shell.name, shell.path.display());
+                }
+                if let Some(default) = agent_pty::default_shell() {
+                    println!("  Default: {}", default.id);
+                }
+            }
+        }
         "/config" => {
             let toml_str = toml::to_string_pretty(config)?;
             println!("{}", toml_str);
@@ -299,6 +419,10 @@ fn handle_command(
             println!("  /sessions      — List all sessions");
             println!("  /switch <id>   — Switch to a session");
             println!("  /tools         — List available tools");
+            println!("  /skills        — List loaded skills");
+            println!("  /context [dir] — Detect project, git, and runtime environments");
+            println!("  /analytics     — Show session analytics summary");
+            println!("  /shells        — List detected shells");
             println!("  /config        — Show current config");
             println!("  /clear         — Clear current session history");
             println!("  /help          — Show this help");

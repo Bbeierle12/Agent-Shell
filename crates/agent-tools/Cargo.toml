@@ -8,6 +8,7 @@ description = "Built-in tools for agent-shell: shell exec, file ops, web fetch, 
 
 [dependencies]
 agent-core = { workspace = true }
+agent-skills = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

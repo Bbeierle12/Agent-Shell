@@ -1,11 +1,15 @@
 mod repl;
 
 use agent_core::config::AppConfig;
+use agent_core::scheduler::{Scheduler, ScheduledTask};
 use agent_core::tool_registry::ToolRegistry;
+use agent_plugins::PluginRegistry;
+use agent_skills::SkillIndexer;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -101,10 +105,26 @@ async fn main() -> Result<()> {
         config.provider.api_base = api_base.clone();
     }
 
+    // Initialize skill indexer from the skills directory.
+    let skills_dir = AppConfig::data_dir().join("skills");
+    let skill_indexer = Arc::new(SkillIndexer::new(&skills_dir));
+
+    // Load skills index if the directory exists.
+    if skills_dir.is_dir() {
+        if let Err(e) = skill_indexer.reload() {
+            tracing::warn!("Failed to load skills index: {}", e);
+        }
+    } else {
+        tracing::debug!("Skills directory not found at {:?}, skipping", skills_dir);
+    }
+
     // Build tool registry with all built-in tools.
     let mut registry = ToolRegistry::new();
-    agent_tools::register_all(&mut registry, &config);
+    agent_tools::register_all(&mut registry, &config, Some(skill_indexer.clone()));
     let registry = Arc::new(registry);
+
+    // Build plugin registry (empty for now — plugins register at startup).
+    let plugin_registry = Arc::new(RwLock::new(PluginRegistry::new()));
 
     tracing::info!(
         "Loaded {} tools, model: {}, endpoint: {}",
@@ -112,6 +132,54 @@ async fn main() -> Result<()> {
         config.provider.model,
         config.provider.api_base,
     );
+
+    // Spawn the scheduler as a background task if any schedules are configured.
+    if !config.schedules.is_empty() {
+        let state_path = AppConfig::data_dir().join("scheduler_state.json");
+        let scheduler = Scheduler::new(config.schedules.clone(), state_path);
+        let (sched_tx, mut sched_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        tokio::spawn(async move {
+            scheduler.run(sched_tx).await;
+        });
+
+        tokio::spawn(async move {
+            while let Some(task) = sched_rx.recv().await {
+                match &task {
+                    ScheduledTask::Prompt {
+                        schedule_name,
+                        prompt,
+                        ..
+                    } => {
+                        tracing::info!(
+                            "Scheduled task '{}' fired: prompt={}",
+                            schedule_name,
+                            &prompt[..prompt.len().min(80)]
+                        );
+                    }
+                    ScheduledTask::Heartbeat {
+                        schedule_name,
+                        skill,
+                        ..
+                    } => {
+                        tracing::info!(
+                            "Scheduled task '{}' fired: heartbeat (skill={})",
+                            schedule_name,
+                            skill
+                        );
+                    }
+                    ScheduledTask::Custom { schedule_name, .. } => {
+                        tracing::info!("Scheduled task '{}' fired: custom", schedule_name);
+                    }
+                }
+            }
+        });
+
+        tracing::info!(
+            "Scheduler running with {} schedule(s)",
+            config.schedules.len()
+        );
+    }
 
     match cli.command {
         Some(Commands::Serve { host, port }) => {
@@ -121,16 +189,16 @@ async fn main() -> Result<()> {
             if let Some(p) = port {
                 config.server.port = p;
             }
-            agent_server::serve(config, registry).await?;
+            agent_server::serve(config, registry, plugin_registry, skill_indexer).await?;
         }
         Some(Commands::Config { action }) => {
             handle_config_command(action, &config)?;
         }
         Some(Commands::Chat { session }) => {
-            repl::run(config, registry, session).await?;
+            repl::run(config, registry, skill_indexer, session).await?;
         }
         None => {
-            repl::run(config, registry, None).await?;
+            repl::run(config, registry, skill_indexer, None).await?;
         }
     }
 

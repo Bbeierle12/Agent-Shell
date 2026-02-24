@@ -1,0 +1,17 @@
+[package]
+name = "agent-pty"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Cross-platform PTY sessions, shell detection, and capture events for agent-shell"
+
+[dependencies]
+portable-pty = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

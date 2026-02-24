@@ -24,6 +24,24 @@ pub struct Session {
     /// Arbitrary metadata attached to this session.
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+    /// Working directory when the session was started.
+    #[serde(default)]
+    pub working_directory: Option<PathBuf>,
+    /// Git branch active when the session was started.
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    /// User-defined tags for categorisation.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Free-form notes attached to the session.
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Hostname of the machine where the session was created.
+    #[serde(default)]
+    pub hostname: Option<String>,
+    /// Profile that was active when this session was created.
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 impl Session {
@@ -38,7 +56,26 @@ impl Session {
             tool_allowlist: None,
             tool_denylist: Vec::new(),
             metadata: HashMap::new(),
+            working_directory: None,
+            git_branch: None,
+            tags: Vec::new(),
+            notes: None,
+            hostname: None,
+            profile: None,
         }
+    }
+
+    /// Add a tag to the session (no duplicates).
+    pub fn add_tag(&mut self, tag: impl Into<String>) {
+        let tag = tag.into();
+        if !self.tags.contains(&tag) {
+            self.tags.push(tag);
+        }
+    }
+
+    /// Set the notes field.
+    pub fn set_notes(&mut self, notes: impl Into<String>) {
+        self.notes = Some(notes.into());
     }
 
     /// Add a message and update the timestamp.

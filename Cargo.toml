@@ -52,13 +52,30 @@ url = "2"
 # Testing
 tempfile = "3"
 
+# Scheduling
+cron = "0.15"
+
+# PTY
+portable-pty = "0.8"
+
+# File watching
+notify = { version = "7.0", default-features = false, features = ["macos_fsevent"] }
+walkdir = "2"
+
+# Regex
+regex = "1"
+
 # Misc
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 
 # Workspace crates
+agent-analytics = { path = "crates/agent-analytics" }
 agent-core = { path = "crates/agent-core" }
+agent-plugins = { path = "crates/agent-plugins" }
+agent-pty = { path = "crates/agent-pty" }
+agent-skills = { path = "crates/agent-skills" }
 agent-tools = { path = "crates/agent-tools" }
 agent-server = { path = "crates/agent-server" }
 
@@ -74,7 +91,11 @@ name = "agent-shell"
 path = "src/main.rs"
 
 [dependencies]
+agent-analytics = { workspace = true }
 agent-core = { workspace = true }
+agent-plugins = { workspace = true }
+agent-pty = { workspace = true }
+agent-skills = { workspace = true }
 agent-tools = { workspace = true }
 agent-server = { workspace = true }
 tokio = { workspace = true }

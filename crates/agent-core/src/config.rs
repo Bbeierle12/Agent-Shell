@@ -1,4 +1,6 @@
+use crate::profiles::ProfileConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Top-level application configuration, loaded from TOML.
@@ -6,6 +8,13 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct AppConfig {
     pub provider: ProviderConfig,
+    /// Multi-provider chain (opt-in). When non-empty, replaces the single `provider`.
+    pub providers: Vec<ProviderEntry>,
+    /// Scheduled tasks (opt-in).
+    pub schedules: Vec<ScheduleConfig>,
+    /// Named profiles for workspace-specific overrides.
+    #[serde(default)]
+    pub profiles: HashMap<String, ProfileConfig>,
     pub sandbox: SandboxConfig,
     pub rag: RagConfig,
     pub server: ServerConfig,
@@ -17,6 +26,9 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             provider: ProviderConfig::default(),
+            providers: Vec::new(),
+            schedules: Vec::new(),
+            profiles: HashMap::new(),
             sandbox: SandboxConfig::default(),
             rag: RagConfig::default(),
             server: ServerConfig::default(),
@@ -111,12 +123,83 @@ impl Default for ProviderConfig {
     }
 }
 
-/// A failover endpoint for provider rotation.
+/// A failover endpoint for provider rotation (legacy format).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailoverEndpoint {
     pub api_base: String,
     pub model: Option<String>,
     pub api_key: Option<String>,
+}
+
+/// A provider entry in the `[[providers]]` multi-provider chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderEntry {
+    pub name: String,
+    pub api_base: String,
+    pub model: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default = "default_priority")]
+    pub priority: u32,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+}
+
+fn default_priority() -> u32 {
+    1
+}
+fn default_timeout_secs() -> u64 {
+    30
+}
+fn default_max_retries() -> u32 {
+    2
+}
+
+/// A scheduled task entry in the `[[schedules]]` array.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleConfig {
+    pub name: String,
+    /// Cron expression (5-field standard or 7-field extended).
+    pub cron: String,
+    #[serde(default)]
+    pub workspace: Option<String>,
+    #[serde(default = "default_schedule_task")]
+    pub task: ScheduleTaskType,
+    /// Skill to load for heartbeat tasks (Phase 2).
+    #[serde(default)]
+    pub skill: Option<String>,
+    /// Prompt text for prompt-type tasks.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScheduleTaskType {
+    Heartbeat,
+    Prompt,
+    Custom,
+}
+
+fn default_schedule_task() -> ScheduleTaskType {
+    ScheduleTaskType::Prompt
+}
+fn default_enabled() -> bool {
+    true
 }
 
 /// Sandbox configuration for code execution.
@@ -275,5 +358,110 @@ timeout_secs = 30
     #[test]
     fn test_default_sandbox_mode_is_docker() {
         assert_eq!(SandboxConfig::default().mode, SandboxMode::Docker);
+    }
+
+    #[test]
+    fn test_providers_array_deserializes() {
+        let toml_str = r#"
+[[providers]]
+name = "scout"
+api_base = "https://api.groq.com/openai/v1"
+model = "llama-4-scout"
+api_key_env = "GROQ_API_KEY"
+priority = 1
+roles = ["routine"]
+
+[[providers]]
+name = "claude"
+api_base = "https://api.anthropic.com/v1"
+model = "claude-sonnet-4-5-20250929"
+api_key_env = "ANTHROPIC_API_KEY"
+priority = 2
+timeout_secs = 60
+max_retries = 1
+roles = ["complex", "creative"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.providers.len(), 2);
+        assert_eq!(config.providers[0].name, "scout");
+        assert_eq!(config.providers[1].name, "claude");
+        assert_eq!(config.providers[1].timeout_secs, 60);
+        assert_eq!(config.providers[1].max_retries, 1);
+        assert_eq!(config.providers[0].roles, vec!["routine"]);
+    }
+
+    #[test]
+    fn test_schedules_array_deserializes() {
+        let toml_str = r#"
+[[schedules]]
+name = "heartbeat"
+cron = "*/30 * * * *"
+workspace = "raisinbolt"
+task = "heartbeat"
+skill = "moltbook"
+
+[[schedules]]
+name = "consolidate"
+cron = "0 */4 * * *"
+task = "prompt"
+prompt = "Consolidate memory."
+enabled = false
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.schedules.len(), 2);
+        assert_eq!(config.schedules[0].name, "heartbeat");
+        assert_eq!(config.schedules[0].task, ScheduleTaskType::Heartbeat);
+        assert_eq!(config.schedules[0].skill.as_deref(), Some("moltbook"));
+        assert!(config.schedules[0].enabled);
+        assert!(!config.schedules[1].enabled);
+    }
+
+    #[test]
+    fn test_empty_schedules_backward_compat() {
+        let config = AppConfig::default();
+        assert!(config.schedules.is_empty());
+    }
+
+    #[test]
+    fn test_profiles_deserialize() {
+        let toml_str = r#"
+[profiles.work]
+description = "Work profile"
+model = "claude-opus-4-20250514"
+api_base = "https://api.anthropic.com/v1"
+system_prompt = "You are a senior engineer."
+max_tokens = 8192
+temperature = 0.2
+
+[profiles.personal]
+model = "llama3"
+working_dir = "/home/user/personal"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.profiles.len(), 2);
+        let work = &config.profiles["work"];
+        assert_eq!(work.model.as_deref(), Some("claude-opus-4-20250514"));
+        assert_eq!(work.max_tokens, Some(8192));
+        let personal = &config.profiles["personal"];
+        assert_eq!(personal.model.as_deref(), Some("llama3"));
+        assert!(personal.api_base.is_none());
+    }
+
+    #[test]
+    fn test_empty_profiles_backward_compat() {
+        let config = AppConfig::default();
+        assert!(config.profiles.is_empty());
+    }
+
+    #[test]
+    fn test_empty_providers_uses_single_provider() {
+        let toml_str = r#"
+[provider]
+api_base = "http://localhost:11434/v1"
+model = "test-model"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.providers.is_empty());
+        assert_eq!(config.provider.model, "test-model");
     }
 }

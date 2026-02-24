@@ -1,7 +1,8 @@
 use crate::config::AppConfig;
 use crate::error::AgentError;
-use crate::tool_registry::{schemas_to_openai_tools, ToolRegistry};
-use crate::types::{AgentEvent, Message, Role, ToolCall, ToolOutput};
+use crate::provider::{ProviderChain, RequestError, ResolvedProvider};
+use crate::tool_registry::ToolRegistry;
+use crate::types::{AgentEvent, Message, Role, ToolCall, ToolOutput, ToolSchema};
 
 use async_openai::config::OpenAIConfig;
 use async_openai::types::{
@@ -22,30 +23,20 @@ const MAX_TOOL_ITERATIONS: usize = 20;
 
 /// The core agent loop — orchestrates LLM calls and tool execution.
 pub struct AgentLoop {
-    client: Client<OpenAIConfig>,
+    provider_chain: ProviderChain,
     config: AppConfig,
     tool_registry: Arc<ToolRegistry>,
 }
 
 impl AgentLoop {
-    /// Create a new agent loop.
-    pub fn new(config: AppConfig, tool_registry: Arc<ToolRegistry>) -> Self {
-        let openai_config = OpenAIConfig::new()
-            .with_api_base(&config.provider.api_base)
-            .with_api_key(
-                config
-                    .provider
-                    .api_key
-                    .clone()
-                    .unwrap_or_else(|| "not-needed".to_string()),
-            );
-
-        let client = Client::with_config(openai_config);
-        Self {
-            client,
+    /// Create a new agent loop with provider failover support.
+    pub fn new(config: AppConfig, tool_registry: Arc<ToolRegistry>) -> Result<Self, AgentError> {
+        let provider_chain = ProviderChain::from_config(&config)?;
+        Ok(Self {
+            provider_chain,
             config,
             tool_registry,
-        }
+        })
     }
 
     /// Run the agent for a single user turn. Takes the full message history and
@@ -60,7 +51,9 @@ impl AgentLoop {
         let tool_schemas = self
             .tool_registry
             .schemas(session_tool_allowlist, session_tool_denylist);
-        let openai_tools = schemas_to_openai_tools(&tool_schemas);
+
+        // Build OpenAI tool definitions once (they don't change between iterations).
+        let openai_tools = build_chat_tools(&tool_schemas)?;
 
         // Build the set of allowed tool names for runtime policy enforcement.
         let allowed_tools: HashSet<String> = tool_schemas.iter().map(|s| s.name.clone()).collect();
@@ -81,47 +74,19 @@ impl AgentLoop {
 
             debug!("Agent loop iteration {}", iteration);
 
-            // Build the request.
-            let mut request_builder = CreateChatCompletionRequestArgs::default();
-            request_builder
-                .model(&self.config.provider.model)
-                .messages(running_messages.clone())
-                .temperature(self.config.provider.temperature)
-                .max_completion_tokens(self.config.provider.max_tokens);
+            // Snapshot messages and tools for the closure.
+            let msgs_snapshot = running_messages.clone();
+            let tools_snapshot = openai_tools.clone();
 
-            if !openai_tools.is_empty() {
-                let tools: Vec<_> = tool_schemas
-                    .iter()
-                    .map(|s| {
-                        let func = FunctionObjectArgs::default()
-                            .name(&s.name)
-                            .description(&s.description)
-                            .parameters(s.parameters.clone())
-                            .build()
-                            .map_err(|e| {
-                                AgentError::Schema(format!("function '{}': {}", s.name, e))
-                            })?;
-                        ChatCompletionToolArgs::default()
-                            .r#type(ChatCompletionToolType::Function)
-                            .function(func)
-                            .build()
-                            .map_err(|e| AgentError::Schema(format!("tool '{}': {}", s.name, e)))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                request_builder.tools(tools);
-            }
-
-            let request = request_builder
-                .build()
-                .map_err(|e| AgentError::Provider(e.to_string()))?;
-
-            // Make the API call.
+            // Use provider chain with automatic failover for the LLM call.
             let response = self
-                .client
-                .chat()
-                .create(request)
-                .await
-                .map_err(|e| AgentError::Provider(e.to_string()))?;
+                .provider_chain
+                .request_with_failover(None, |provider| {
+                    let msgs = msgs_snapshot.clone();
+                    let tools = tools_snapshot.clone();
+                    async move { send_completion_request(provider, msgs, tools).await }
+                })
+                .await?;
 
             let choice = response
                 .choices
@@ -303,5 +268,90 @@ impl AgentLoop {
         }
 
         Ok(result)
+    }
+}
+
+/// Build OpenAI-format tool definitions from our tool schemas.
+fn build_chat_tools(
+    schemas: &[ToolSchema],
+) -> Result<Vec<async_openai::types::ChatCompletionTool>, AgentError> {
+    schemas
+        .iter()
+        .map(|s| {
+            let func = FunctionObjectArgs::default()
+                .name(&s.name)
+                .description(&s.description)
+                .parameters(s.parameters.clone())
+                .build()
+                .map_err(|e| AgentError::Schema(format!("function '{}': {}", s.name, e)))?;
+            ChatCompletionToolArgs::default()
+                .r#type(ChatCompletionToolType::Function)
+                .function(func)
+                .build()
+                .map_err(|e| AgentError::Schema(format!("tool '{}': {}", s.name, e)))
+        })
+        .collect()
+}
+
+/// Send a chat completion request to a specific provider.
+async fn send_completion_request(
+    provider: ResolvedProvider,
+    messages: Vec<ChatCompletionRequestMessage>,
+    tools: Vec<async_openai::types::ChatCompletionTool>,
+) -> Result<async_openai::types::CreateChatCompletionResponse, RequestError> {
+    let openai_config = OpenAIConfig::new()
+        .with_api_base(&provider.api_base)
+        .with_api_key(provider.api_key.as_deref().unwrap_or("not-needed"));
+    let client = Client::with_config(openai_config);
+
+    let mut request_builder = CreateChatCompletionRequestArgs::default();
+    request_builder
+        .model(&provider.model)
+        .messages(messages)
+        .temperature(provider.temperature)
+        .max_completion_tokens(provider.max_tokens);
+
+    if !tools.is_empty() {
+        request_builder.tools(tools);
+    }
+
+    let request = request_builder
+        .build()
+        .map_err(|e| RequestError::Permanent(format!("Failed to build request: {}", e)))?;
+
+    let timeout_duration = std::time::Duration::from_secs(provider.timeout_secs);
+    match tokio::time::timeout(timeout_duration, client.chat().create(request)).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(e)) => classify_provider_error(e),
+        Err(_) => Err(RequestError::Transient(format!(
+            "Request timed out after {}s",
+            provider.timeout_secs
+        ))),
+    }
+}
+
+/// Classify an async-openai error for failover decisions.
+///
+/// Auth/config errors (4xx patterns) are Permanent — do not failover.
+/// Everything else (5xx, network, timeout) is Transient — try next provider.
+fn classify_provider_error<T>(
+    err: async_openai::error::OpenAIError,
+) -> Result<T, RequestError> {
+    let msg = err.to_string();
+    let lower = msg.to_lowercase();
+
+    let permanent_patterns = [
+        "invalid_api_key",
+        "authentication",
+        "unauthorized",
+        "invalid_request",
+        "model_not_found",
+        "permission",
+    ];
+
+    if permanent_patterns.iter().any(|p| lower.contains(p)) {
+        Err(RequestError::Permanent(msg))
+    } else {
+        Err(RequestError::Transient(msg))
     }
 }

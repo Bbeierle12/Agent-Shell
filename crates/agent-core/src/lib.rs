@@ -1,12 +1,26 @@
 pub mod agent_loop;
+pub mod claude_detect;
 pub mod config;
+pub mod context;
 pub mod error;
+pub mod event_bus;
+pub mod profiles;
+pub mod provider;
+pub mod scheduler;
+pub mod scrubber;
 pub mod session;
 pub mod tool_registry;
 pub mod types;
 
 pub use agent_loop::AgentLoop;
+pub use claude_detect::ClaudeDetector;
 pub use config::AppConfig;
+pub use context::ContextLinker;
 pub use error::AgentError;
+pub use event_bus::EventBus;
+pub use profiles::ProfileConfig;
+pub use provider::ProviderChain;
+pub use scheduler::Scheduler;
+pub use scrubber::SecretScrubber;
 pub use session::{Session, SessionManager};
 pub use tool_registry::ToolRegistry;
