@@ -153,7 +153,10 @@ mod tests {
         );
         let result = resolve_profile(&profiles, "work");
         assert!(result.is_some());
-        assert_eq!(result.unwrap().model.as_deref(), Some("claude-opus-4-20250514"));
+        assert_eq!(
+            result.unwrap().model.as_deref(),
+            Some("claude-opus-4-20250514")
+        );
     }
 
     #[test]

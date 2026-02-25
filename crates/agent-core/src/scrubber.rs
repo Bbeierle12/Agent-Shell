@@ -40,10 +40,7 @@ impl SecretScrubber {
 
     /// Create a scrubber with custom patterns.
     pub fn with_patterns(patterns: Vec<String>) -> Self {
-        let compiled: Vec<Regex> = patterns
-            .iter()
-            .filter_map(|p| Regex::new(p).ok())
-            .collect();
+        let compiled: Vec<Regex> = patterns.iter().filter_map(|p| Regex::new(p).ok()).collect();
 
         Self {
             patterns: compiled,

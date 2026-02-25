@@ -94,11 +94,8 @@ impl Tool for SkillLoadTool {
                     return Ok(format!("No skills found matching '{}'.", query));
                 }
 
-                let mut output = format!(
-                    "Found {} skill(s) matching '{}':\n\n",
-                    results.len(),
-                    query
-                );
+                let mut output =
+                    format!("Found {} skill(s) matching '{}':\n\n", results.len(), query);
 
                 for result in &results.results {
                     output.push_str(&format!(
@@ -293,9 +290,7 @@ mod tests {
         let (_tmp, indexer) = setup_test_indexer();
         let tool = SkillLoadTool::new(indexer);
 
-        let result = tool
-            .execute(serde_json::json!({"action": "invalid"}))
-            .await;
+        let result = tool.execute(serde_json::json!({"action": "invalid"})).await;
 
         assert!(result.is_err());
     }

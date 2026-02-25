@@ -331,8 +331,7 @@ mod tests {
         analytics.process_session(&session);
         analytics.finalize_all();
 
-        let report =
-            ReportGenerator::monthly_report(&analytics, today.year(), today.month());
+        let report = ReportGenerator::monthly_report(&analytics, today.year(), today.month());
         assert!(report.contains("# Monthly Report"));
         assert!(report.contains("## Overview"));
         assert!(report.contains("## Weekly Breakdown"));

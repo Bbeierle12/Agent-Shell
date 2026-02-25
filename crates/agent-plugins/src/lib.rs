@@ -365,7 +365,10 @@ mod tests {
     fn test_list_all() {
         let mut registry = PluginRegistry::new();
         registry
-            .register(Box::new(MockPlugin::new("shell_exec", PluginCategory::Tool)))
+            .register(Box::new(MockPlugin::new(
+                "shell_exec",
+                PluginCategory::Tool,
+            )))
             .unwrap();
         registry
             .register(Box::new(MockPlugin::new("groq", PluginCategory::Provider)))
@@ -379,7 +382,10 @@ mod tests {
     fn test_list_by_category() {
         let mut registry = PluginRegistry::new();
         registry
-            .register(Box::new(MockPlugin::new("shell_exec", PluginCategory::Tool)))
+            .register(Box::new(MockPlugin::new(
+                "shell_exec",
+                PluginCategory::Tool,
+            )))
             .unwrap();
         registry
             .register(Box::new(MockPlugin::new("file_ops", PluginCategory::Tool)))
@@ -403,14 +409,12 @@ mod tests {
         let mut registry = PluginRegistry::new();
         registry
             .register(Box::new(
-                MockPlugin::new("healthy", PluginCategory::Tool)
-                    .with_health(PluginStatus::Running),
+                MockPlugin::new("healthy", PluginCategory::Tool).with_health(PluginStatus::Running),
             ))
             .unwrap();
         registry
             .register(Box::new(
-                MockPlugin::new("sick", PluginCategory::Extension)
-                    .with_health(PluginStatus::Error),
+                MockPlugin::new("sick", PluginCategory::Extension).with_health(PluginStatus::Error),
             ))
             .unwrap();
 

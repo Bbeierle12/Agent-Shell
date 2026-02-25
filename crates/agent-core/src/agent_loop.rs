@@ -334,9 +334,7 @@ async fn send_completion_request(
 ///
 /// Auth/config errors (4xx patterns) are Permanent — do not failover.
 /// Everything else (5xx, network, timeout) is Transient — try next provider.
-fn classify_provider_error<T>(
-    err: async_openai::error::OpenAIError,
-) -> Result<T, RequestError> {
+fn classify_provider_error<T>(err: async_openai::error::OpenAIError) -> Result<T, RequestError> {
     let msg = err.to_string();
     let lower = msg.to_lowercase();
 

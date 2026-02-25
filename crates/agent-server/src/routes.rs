@@ -1,7 +1,6 @@
 use crate::state::AppState;
 use agent_core::context::ContextLinker;
 use agent_core::types::{AgentEvent, Message};
-use chrono::Datelike;
 use agent_plugins::PluginInfo;
 use agent_pty::ShellInfo;
 use agent_skills::SearchOptions;
@@ -12,6 +11,7 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use axum::Router;
+use chrono::Datelike;
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
@@ -466,9 +466,7 @@ enum TerminalInput {
     Resize { cols: u16, rows: u16 },
 }
 
-async fn terminal_ws(
-    ws: axum::extract::WebSocketUpgrade,
-) -> impl IntoResponse {
+async fn terminal_ws(ws: axum::extract::WebSocketUpgrade) -> impl IntoResponse {
     ws.on_upgrade(handle_terminal_socket)
 }
 
@@ -481,7 +479,9 @@ async fn handle_terminal_socket(mut socket: axum::extract::ws::WebSocket) {
         None => {
             let _ = socket
                 .send(WsMessage::Text(
-                    serde_json::json!({"type": "error", "message": "No shell found"}).to_string().into(),
+                    serde_json::json!({"type": "error", "message": "No shell found"})
+                        .to_string()
+                        .into(),
                 ))
                 .await;
             return;
@@ -494,7 +494,8 @@ async fn handle_terminal_socket(mut socket: axum::extract::ws::WebSocket) {
             let _ = socket
                 .send(WsMessage::Text(
                     serde_json::json!({"type": "error", "message": format!("PTY error: {e}")})
-                        .to_string().into(),
+                        .to_string()
+                        .into(),
                 ))
                 .await;
             return;
@@ -510,7 +511,8 @@ async fn handle_terminal_socket(mut socket: axum::extract::ws::WebSocket) {
                 "cols": 80,
                 "rows": 24,
             })
-            .to_string().into(),
+            .to_string()
+            .into(),
         ))
         .await;
 
@@ -628,7 +630,9 @@ async fn get_context(
     let dir = params
         .directory
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
 
     let mut linker = ContextLinker::new();
     let project = linker.detect_project(&dir).map(|p| ProjectInfo {
@@ -719,13 +723,15 @@ async fn analytics_summary(State(state): State<AppState>) -> impl IntoResponse {
     analytics.finalize_all();
 
     let today = chrono::Utc::now().date_naive();
-    let today_summary = analytics.get_daily_summary(today).map(|s| DaySummaryResponse {
-        sessions: s.session_count,
-        messages: s.message_count,
-        active_time: agent_analytics::aggregations::format_duration(s.total_active_time_secs),
-        tool_calls: s.tool_call_count,
-        tool_errors: s.tool_error_count,
-    });
+    let today_summary = analytics
+        .get_daily_summary(today)
+        .map(|s| DaySummaryResponse {
+            sessions: s.session_count,
+            messages: s.message_count,
+            active_time: agent_analytics::aggregations::format_duration(s.total_active_time_secs),
+            tool_calls: s.tool_call_count,
+            tool_errors: s.tool_error_count,
+        });
 
     Json(AnalyticsSummaryResponse {
         total_sessions: analytics.total_sessions(),
