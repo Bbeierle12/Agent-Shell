@@ -46,6 +46,64 @@ enum ConnStatus {
     Disconnected,
 }
 
+/// Convert history messages from the server into ChatItems.
+fn history_to_chat_items(messages: &[api::HistoryMessage]) -> Vec<ChatItem> {
+    let mut items = Vec::new();
+    for msg in messages {
+        match msg.role.as_str() {
+            "user" => items.push(ChatItem::UserMessage(msg.content.clone())),
+            "assistant" => {
+                // If the assistant message has tool_calls, show them.
+                if let Some(tcs) = &msg.tool_calls {
+                    if !msg.content.is_empty() {
+                        items.push(ChatItem::AssistantMessage(msg.content.clone()));
+                    }
+                    for tc in tcs {
+                        items.push(ChatItem::ToolCall(ToolCardState {
+                            name: tc.name.clone(),
+                            status: ToolStatus::Complete,
+                            output: None,
+                            is_error: false,
+                            collapsed: true,
+                        }));
+                    }
+                } else {
+                    items.push(ChatItem::AssistantMessage(msg.content.clone()));
+                }
+            }
+            "tool" => {
+                // Tool result — attach output to last running tool card.
+                if let Some(last_tool) = items.iter_mut().rev().find(|m| {
+                    matches!(
+                        m,
+                        ChatItem::ToolCall(ToolCardState {
+                            output: None,
+                            ..
+                        })
+                    )
+                }) {
+                    if let ChatItem::ToolCall(ref mut card) = last_tool {
+                        card.output = Some(msg.content.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    items
+}
+
+/// Scroll the messages container to the bottom.
+fn scroll_to_bottom() {
+    if let Some(window) = web_sys::window() {
+        if let Some(doc) = window.document() {
+            if let Some(el) = doc.query_selector(".messages").ok().flatten() {
+                el.set_scroll_top(el.scroll_height());
+            }
+        }
+    }
+}
+
 // ── App Component ───────────────────────────────────────────────────────
 
 #[component]
@@ -56,21 +114,34 @@ fn App() -> impl IntoView {
     let (sessions, set_sessions) = signal(Vec::<SessionInfo>::new());
     let (active_session, set_active_session) = signal(Option::<String>::None);
     let (conn_status, set_conn_status) = signal(ConnStatus::Checking);
+    let (show_settings, set_show_settings) = signal(false);
+    let (server_config, set_server_config) = signal(Option::<api::ServerConfig>::None);
     let api_base = api::detect_api_base();
 
-    // Check backend health on mount.
+    // Check backend health on mount and load config.
     {
         let base = api_base.clone();
         let set_conn_status = set_conn_status.clone();
         let set_sessions = set_sessions.clone();
         let set_active_session = set_active_session.clone();
+        let set_messages = set_messages.clone();
+        let set_server_config = set_server_config.clone();
         spawn_local(async move {
             match api::health_check(&base).await {
                 Ok(_) => {
                     set_conn_status.set(ConnStatus::Connected);
+                    // Load config.
+                    if let Ok(cfg) = api::get_config(&base).await {
+                        set_server_config.set(Some(cfg));
+                    }
+                    // Load sessions and history for the first one.
                     if let Ok(sess) = api::list_sessions(&base).await {
                         if let Some(first) = sess.first() {
-                            set_active_session.set(Some(first.id.clone()));
+                            let sid = first.id.clone();
+                            set_active_session.set(Some(sid.clone()));
+                            if let Ok(history) = api::get_session_messages(&base, &sid).await {
+                                set_messages.set(history_to_chat_items(&history));
+                            }
                         }
                         set_sessions.set(sess);
                     }
@@ -95,83 +166,88 @@ fn App() -> impl IntoView {
             set_messages.update(|msgs| {
                 msgs.push(ChatItem::UserMessage(text.clone()));
             });
+            scroll_to_bottom();
 
             set_streaming.set(true);
             let base = api_base.clone();
             let set_messages = set_messages.clone();
             let set_streaming = set_streaming.clone();
+            let session_id = active_session.get_untracked();
 
             spawn_local(async move {
                 set_messages.update(|msgs| {
                     msgs.push(ChatItem::AssistantMessage(String::new()));
                 });
 
-                let result = api::stream_chat(&base, &text, {
+                let result = api::stream_chat(&base, &text, session_id.as_deref(), {
                     let set_messages = set_messages.clone();
-                    move |event| match event {
-                        api::StreamEvent::Token(token) => {
-                            set_messages.update(|msgs| {
-                                if let Some(last) = msgs.iter_mut().rev().find(|m| {
-                                    matches!(m, ChatItem::AssistantMessage(_))
-                                }) {
-                                    if let ChatItem::AssistantMessage(ref mut s) = last {
-                                        s.push_str(&token);
-                                    }
-                                }
-                            });
-                        }
-                        api::StreamEvent::ToolStart(name) => {
-                            set_messages.update(|msgs| {
-                                msgs.push(ChatItem::ToolCall(ToolCardState {
-                                    name,
-                                    status: ToolStatus::Running,
-                                    output: None,
-                                    is_error: false,
-                                    collapsed: false,
-                                }));
-                            });
-                        }
-                        api::StreamEvent::ToolResult {
-                            content,
-                            is_error,
-                        } => {
-                            set_messages.update(|msgs| {
-                                if let Some(last) = msgs.iter_mut().rev().find(|m| {
-                                    matches!(
-                                        m,
-                                        ChatItem::ToolCall(ToolCardState {
-                                            status: ToolStatus::Running,
-                                            ..
-                                        })
-                                    )
-                                }) {
-                                    if let ChatItem::ToolCall(ref mut card) = last {
-                                        card.status = if is_error {
-                                            ToolStatus::Error
-                                        } else {
-                                            ToolStatus::Complete
-                                        };
-                                        card.output = Some(content);
-                                        card.is_error = is_error;
-                                    }
-                                }
-                                msgs.push(ChatItem::AssistantMessage(String::new()));
-                            });
-                        }
-                        api::StreamEvent::Done => {}
-                        api::StreamEvent::Error(e) => {
-                            set_messages.update(|msgs| {
-                                if let Some(last) = msgs.iter_mut().rev().find(|m| {
-                                    matches!(m, ChatItem::AssistantMessage(_))
-                                }) {
-                                    if let ChatItem::AssistantMessage(ref mut s) = last {
-                                        if s.is_empty() {
-                                            *s = format!("Error: {}", e);
+                    move |event| {
+                        match event {
+                            api::StreamEvent::Token(token) => {
+                                set_messages.update(|msgs| {
+                                    if let Some(last) = msgs.iter_mut().rev().find(|m| {
+                                        matches!(m, ChatItem::AssistantMessage(_))
+                                    }) {
+                                        if let ChatItem::AssistantMessage(ref mut s) = last {
+                                            s.push_str(&token);
                                         }
                                     }
-                                }
-                            });
+                                });
+                            }
+                            api::StreamEvent::ToolStart(name) => {
+                                set_messages.update(|msgs| {
+                                    msgs.push(ChatItem::ToolCall(ToolCardState {
+                                        name,
+                                        status: ToolStatus::Running,
+                                        output: None,
+                                        is_error: false,
+                                        collapsed: false,
+                                    }));
+                                });
+                            }
+                            api::StreamEvent::ToolResult {
+                                content,
+                                is_error,
+                            } => {
+                                set_messages.update(|msgs| {
+                                    if let Some(last) = msgs.iter_mut().rev().find(|m| {
+                                        matches!(
+                                            m,
+                                            ChatItem::ToolCall(ToolCardState {
+                                                status: ToolStatus::Running,
+                                                ..
+                                            })
+                                        )
+                                    }) {
+                                        if let ChatItem::ToolCall(ref mut card) = last {
+                                            card.status = if is_error {
+                                                ToolStatus::Error
+                                            } else {
+                                                ToolStatus::Complete
+                                            };
+                                            card.output = Some(content);
+                                            card.is_error = is_error;
+                                        }
+                                    }
+                                    msgs.push(ChatItem::AssistantMessage(String::new()));
+                                });
+                            }
+                            api::StreamEvent::Done => {}
+                            api::StreamEvent::Error(e) => {
+                                set_messages.update(|msgs| {
+                                    if let Some(last) = msgs.iter_mut().rev().find(|m| {
+                                        matches!(m, ChatItem::AssistantMessage(_))
+                                    }) {
+                                        if let ChatItem::AssistantMessage(ref mut s) = last {
+                                            if s.is_empty() {
+                                                *s = format!("Error: {}", e);
+                                            }
+                                        }
+                                    }
+                                });
+                            }
                         }
+                        scroll_to_bottom();
                     }
                 })
                 .await;
@@ -202,15 +278,25 @@ fn App() -> impl IntoView {
                 });
 
                 set_streaming.set(false);
+                scroll_to_bottom();
             });
         }
     };
 
-    // Session click handler.
+    // Session click handler — loads history.
     let on_session_click = {
+        let api_base = api_base.clone();
         move |session_id: String| {
-            set_active_session.set(Some(session_id));
+            set_active_session.set(Some(session_id.clone()));
             set_messages.set(Vec::new());
+            let base = api_base.clone();
+            let set_messages = set_messages.clone();
+            spawn_local(async move {
+                if let Ok(history) = api::get_session_messages(&base, &session_id).await {
+                    set_messages.set(history_to_chat_items(&history));
+                    scroll_to_bottom();
+                }
+            });
         }
     };
 
@@ -249,9 +335,10 @@ fn App() -> impl IntoView {
                 conn_status=conn_status
                 on_click=on_session_click
                 on_new=on_new_session
+                on_settings=move || set_show_settings.set(true)
             />
             <div class="chat-area">
-                <div class="chat-header">"Agent Shell"</div>
+                <ChatHeader config=server_config />
                 <MessageList messages=messages set_messages=set_messages />
                 <InputBar
                     input=input
@@ -260,6 +347,36 @@ fn App() -> impl IntoView {
                     on_send=on_send
                 />
             </div>
+        </div>
+        {move || {
+            if show_settings.get() {
+                view! {
+                    <SettingsModal
+                        config=server_config
+                        on_close=move || set_show_settings.set(false)
+                    />
+                }.into_any()
+            } else {
+                view! { <div></div> }.into_any()
+            }
+        }}
+    }
+}
+
+// ── Chat Header ─────────────────────────────────────────────────────────
+
+#[component]
+fn ChatHeader(config: ReadSignal<Option<api::ServerConfig>>) -> impl IntoView {
+    view! {
+        <div class="chat-header">
+            <span class="chat-title">"Agent Shell"</span>
+            {move || {
+                config.get().map(|c| {
+                    view! {
+                        <span class="header-model">{c.provider.model.clone()}</span>
+                    }
+                })
+            }}
         </div>
     }
 }
@@ -273,15 +390,22 @@ fn Sidebar(
     conn_status: ReadSignal<ConnStatus>,
     on_click: impl Fn(String) + Send + Sync + 'static + Clone,
     on_new: impl Fn() + Send + Sync + 'static + Clone,
+    on_settings: impl Fn() + Send + Sync + 'static + Clone,
 ) -> impl IntoView {
     view! {
         <div class="sidebar">
             <div class="sidebar-header">
                 <h2>"Sessions"</h2>
-                <button class="new-btn" on:click={
-                    let on_new = on_new.clone();
-                    move |_| on_new()
-                }>"+ New"</button>
+                <div class="sidebar-actions">
+                    <button class="icon-btn" title="Settings" on:click={
+                        let on_settings = on_settings.clone();
+                        move |_| on_settings()
+                    }>"\u{2699}"</button>
+                    <button class="new-btn" on:click={
+                        let on_new = on_new.clone();
+                        move |_| on_new()
+                    }>"+ New"</button>
+                </div>
             </div>
             <div class="session-list">
                 <For
@@ -330,6 +454,112 @@ fn Sidebar(
     }
 }
 
+// ── Settings Modal ──────────────────────────────────────────────────────
+
+#[component]
+fn SettingsModal(
+    config: ReadSignal<Option<api::ServerConfig>>,
+    on_close: impl Fn() + Send + Sync + 'static + Clone,
+) -> impl IntoView {
+    let on_close2 = on_close.clone();
+    view! {
+        <div class="modal-overlay" on:click={
+            let on_close = on_close.clone();
+            move |_| on_close()
+        }>
+            <div class="modal" on:click=move |ev| ev.stop_propagation()>
+                <div class="modal-header">
+                    <h2>"Settings"</h2>
+                    <button class="modal-close" on:click=move |_| on_close2()>"\u{00D7}"</button>
+                </div>
+                <div class="modal-body">
+                    {move || match config.get() {
+                        Some(c) => view! {
+                            <div class="settings-grid">
+                                <div class="settings-section">
+                                    <h3>"Provider"</h3>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Model"</span>
+                                        <span class="setting-value">{c.provider.model.clone()}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Endpoint"</span>
+                                        <span class="setting-value code">{c.provider.api_base.clone()}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Max Tokens"</span>
+                                        <span class="setting-value">{c.provider.max_tokens}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Temperature"</span>
+                                        <span class="setting-value">{format!("{:.1}", c.provider.temperature)}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"API Key"</span>
+                                        <span class="setting-value">{if c.provider.has_api_key { "configured" } else { "not set" }}</span>
+                                    </div>
+                                </div>
+                                <div class="settings-section">
+                                    <h3>"Server"</h3>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Address"</span>
+                                        <span class="setting-value code">{format!("{}:{}", c.server.host, c.server.port)}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Auth"</span>
+                                        <span class="setting-value">{if c.server.has_auth_token { "enabled" } else { "disabled" }}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"CORS"</span>
+                                        <span class="setting-value">{if c.server.cors { "enabled" } else { "disabled" }}</span>
+                                    </div>
+                                </div>
+                                <div class="settings-section">
+                                    <h3>"Session"</h3>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Context Window"</span>
+                                        <span class="setting-value">{format!("{} messages", c.session.max_history)}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Auto-save"</span>
+                                        <span class="setting-value">{if c.session.auto_save { "on" } else { "off" }}</span>
+                                    </div>
+                                </div>
+                                <div class="settings-section">
+                                    <h3>"Sandbox"</h3>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Mode"</span>
+                                        <span class="setting-value">{c.sandbox.mode.clone()}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Image"</span>
+                                        <span class="setting-value code">{c.sandbox.docker_image.clone()}</span>
+                                    </div>
+                                    <div class="setting-row">
+                                        <span class="setting-label">"Timeout"</span>
+                                        <span class="setting-value">{format!("{}s", c.sandbox.timeout_secs)}</span>
+                                    </div>
+                                </div>
+                                <div class="settings-section">
+                                    <h3>"Tools"</h3>
+                                    <div class="tools-list">
+                                        {c.tools.iter().map(|t| view! {
+                                            <span class="tool-badge">{t.clone()}</span>
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                </div>
+                            </div>
+                        }.into_any(),
+                        None => view! {
+                            <p style="color: var(--text-muted)">"Loading configuration..."</p>
+                        }.into_any(),
+                    }}
+                </div>
+            </div>
+        </div>
+    }
+}
+
 // ── Message List ────────────────────────────────────────────────────────
 
 #[component]
@@ -368,10 +598,11 @@ fn MessageList(
                                 }.into_any()
                             }
                             ChatItem::AssistantMessage(text) => {
+                                let rendered = api::markdown_to_html(text);
                                 view! {
                                     <div class="message assistant">
                                         <div class="role-label">"Assistant"</div>
-                                        {text.clone()}
+                                        <div class="md-content" inner_html=rendered></div>
                                     </div>
                                 }.into_any()
                             }
@@ -425,8 +656,9 @@ fn ToolCard(
                 <span class=format!("tool-status {}", status_class)>{status_text}</span>
             </div>
             {if has_output {
-                let truncated = if output.len() > 500 {
-                    format!("{}...", &output[..500])
+                let truncated = if output.chars().count() > 500 {
+                    let s: String = output.chars().take(500).collect();
+                    format!("{}...", s)
                 } else {
                     output
                 };

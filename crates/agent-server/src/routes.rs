@@ -201,6 +201,143 @@ struct CreateSessionRequest {
     name: String,
 }
 
+// ── Config ─────────────────────────────────────────────────────────────
+
+pub fn config_routes() -> Router<AppState> {
+    Router::new().route("/v1/config", get(get_config))
+}
+
+#[derive(Debug, Serialize)]
+struct ConfigResponse {
+    provider: ProviderConfigResponse,
+    server: ServerConfigResponse,
+    session: SessionConfigResponse,
+    sandbox: SandboxConfigResponse,
+    tools: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderConfigResponse {
+    api_base: String,
+    model: String,
+    max_tokens: u32,
+    temperature: f32,
+    top_p: f32,
+    has_api_key: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ServerConfigResponse {
+    host: String,
+    port: u16,
+    cors: bool,
+    has_auth_token: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionConfigResponse {
+    max_history: usize,
+    auto_save: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SandboxConfigResponse {
+    mode: String,
+    docker_image: String,
+    timeout_secs: u64,
+}
+
+async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
+    let c = &state.config;
+    let tools: Vec<String> = state.tool_registry.list_names().iter().map(|n| n.to_string()).collect();
+    Json(ConfigResponse {
+        provider: ProviderConfigResponse {
+            api_base: c.provider.api_base.clone(),
+            model: c.provider.model.clone(),
+            max_tokens: c.provider.max_tokens,
+            temperature: c.provider.temperature,
+            top_p: c.provider.top_p,
+            has_api_key: c.provider.api_key.is_some(),
+        },
+        server: ServerConfigResponse {
+            host: c.server.host.clone(),
+            port: c.server.port,
+            cors: c.server.cors,
+            has_auth_token: c.server.auth_token.is_some(),
+        },
+        session: SessionConfigResponse {
+            max_history: c.session.max_history,
+            auto_save: c.session.auto_save,
+        },
+        sandbox: SandboxConfigResponse {
+            mode: format!("{:?}", c.sandbox.mode),
+            docker_image: c.sandbox.docker_image.clone(),
+            timeout_secs: c.sandbox.timeout_secs,
+        },
+        tools,
+    })
+}
+
+// ── Session Messages ──────────────────────────────────────────────────
+
+pub fn session_message_routes() -> Router<AppState> {
+    Router::new().route("/v1/sessions/{id}/messages", get(get_session_messages))
+}
+
+async fn get_session_messages(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let sessions_dir = state
+        .config
+        .session
+        .history_dir
+        .clone()
+        .unwrap_or_else(|| agent_core::config::AppConfig::data_dir().join("sessions"));
+
+    let path = sessions_dir.join(format!("{}.json", id));
+    let session = agent_core::session::Session::load_from(&path)
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("Session not found: {}", e)))?;
+
+    #[derive(Serialize)]
+    struct MessageResponse {
+        id: String,
+        role: String,
+        content: String,
+        tool_calls: Option<Vec<ToolCallResponse>>,
+        tool_call_id: Option<String>,
+        timestamp: String,
+    }
+
+    #[derive(Serialize)]
+    struct ToolCallResponse {
+        id: String,
+        name: String,
+    }
+
+    let messages: Vec<MessageResponse> = session
+        .messages
+        .iter()
+        .map(|m| MessageResponse {
+            id: m.id.clone(),
+            role: format!("{:?}", m.role).to_lowercase(),
+            content: m.content.clone(),
+            tool_calls: m.tool_calls.as_ref().map(|tcs| {
+                tcs.iter()
+                    .map(|tc| ToolCallResponse {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                    })
+                    .collect()
+            }),
+            tool_call_id: m.tool_call_id.clone(),
+            timestamp: m.timestamp.to_rfc3339(),
+        })
+        .collect();
+
+    Ok(Json(messages))
+}
+
 // ── Plugins ────────────────────────────────────────────────────────────
 
 pub fn plugin_routes() -> Router<AppState> {

@@ -48,6 +48,8 @@ pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .merge(routes::chat_routes())
         .merge(routes::session_routes())
+        .merge(routes::session_message_routes())
+        .merge(routes::config_routes())
         .merge(routes::plugin_routes())
         .merge(routes::skill_routes())
         .merge(routes::terminal_routes())

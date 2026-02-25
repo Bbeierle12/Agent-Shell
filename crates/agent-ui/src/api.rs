@@ -9,12 +9,12 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 
 /// Detect API base URL — use window.location origin in production,
-/// fall back to localhost:3000 for dev.
+/// fall back to localhost:3001 for dev.
 pub fn detect_api_base() -> String {
     if let Some(window) = web_sys::window() {
         if let Ok(origin) = window.location().origin() {
             // If we're served from Trunk dev server (typically 8080),
-            // proxy to agent-server on 3000.
+            // proxy to agent-server on 3001.
             if origin.contains("127.0.0.1:8080") || origin.contains("localhost:8080") {
                 return "http://127.0.0.1:3001".to_string();
             }
@@ -22,6 +22,40 @@ pub fn detect_api_base() -> String {
         }
     }
     "http://127.0.0.1:3001".to_string()
+}
+
+/// Read auth token from query string (?token=...) or localStorage.
+pub fn get_auth_token() -> Option<String> {
+    let window = web_sys::window()?;
+    // Check query param first.
+    if let Ok(search) = window.location().search() {
+        for pair in search.trim_start_matches('?').split('&') {
+            if let Some(val) = pair.strip_prefix("token=") {
+                let token = val.to_string();
+                // Persist to localStorage for future loads.
+                if let Ok(Some(storage)) = window.local_storage() {
+                    let _ = storage.set_item("agent_shell_token", &token);
+                }
+                return Some(token);
+            }
+        }
+    }
+    // Fall back to localStorage.
+    if let Ok(Some(storage)) = window.local_storage() {
+        if let Ok(Some(token)) = storage.get_item("agent_shell_token") {
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+    }
+    None
+}
+
+/// Apply auth header to a web_sys::Headers if a token is available.
+fn apply_auth(headers: &web_sys::Headers) {
+    if let Some(token) = get_auth_token() {
+        let _ = headers.set("Authorization", &format!("Bearer {}", token));
+    }
 }
 
 /// Session info returned by the sessions API.
@@ -40,6 +74,64 @@ pub struct CreatedSession {
     pub name: String,
 }
 
+/// A message from session history.
+#[derive(Clone, Debug, Deserialize)]
+pub struct HistoryMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub tool_calls: Option<Vec<HistoryToolCall>>,
+    pub tool_call_id: Option<String>,
+    pub timestamp: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct HistoryToolCall {
+    pub id: String,
+    pub name: String,
+}
+
+/// Server config response.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ServerConfig {
+    pub provider: ProviderConfigInfo,
+    pub server: ServerInfo,
+    pub session: SessionConfigInfo,
+    pub sandbox: SandboxInfo,
+    pub tools: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProviderConfigInfo {
+    pub api_base: String,
+    pub model: String,
+    pub max_tokens: u32,
+    pub temperature: f32,
+    pub top_p: f32,
+    pub has_api_key: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ServerInfo {
+    pub host: String,
+    pub port: u16,
+    pub cors: bool,
+    pub has_auth_token: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SessionConfigInfo {
+    pub max_history: usize,
+    pub auto_save: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SandboxInfo {
+    pub mode: String,
+    pub docker_image: String,
+    pub timeout_secs: u64,
+}
+
 /// Events emitted during SSE streaming.
 #[derive(Debug)]
 pub enum StreamEvent {
@@ -50,9 +142,18 @@ pub enum StreamEvent {
     Error(String),
 }
 
+/// Apply optional auth header to a gloo-net RequestBuilder.
+fn with_auth(req: gloo_net::http::RequestBuilder) -> gloo_net::http::RequestBuilder {
+    if let Some(token) = get_auth_token() {
+        req.header("Authorization", &format!("Bearer {}", token))
+    } else {
+        req
+    }
+}
+
 /// Check if the backend is reachable.
 pub async fn health_check(base: &str) -> Result<(), String> {
-    let resp = Request::get(&format!("{}/health", base))
+    let resp = with_auth(Request::get(&format!("{}/health", base)))
         .send()
         .await
         .map_err(|e| format!("Network error: {}", e))?;
@@ -66,7 +167,7 @@ pub async fn health_check(base: &str) -> Result<(), String> {
 
 /// List all sessions.
 pub async fn list_sessions(base: &str) -> Result<Vec<SessionInfo>, String> {
-    let resp = Request::get(&format!("{}/v1/sessions", base))
+    let resp = with_auth(Request::get(&format!("{}/v1/sessions", base)))
         .send()
         .await
         .map_err(|e| format!("Network error: {}", e))?;
@@ -84,7 +185,7 @@ pub async fn list_sessions(base: &str) -> Result<Vec<SessionInfo>, String> {
 pub async fn create_session(base: &str, name: &str) -> Result<CreatedSession, String> {
     let body = serde_json::json!({ "name": name });
 
-    let resp = Request::post(&format!("{}/v1/sessions", base))
+    let resp = with_auth(Request::post(&format!("{}/v1/sessions", base)))
         .header("Content-Type", "application/json")
         .body(body.to_string())
         .map_err(|e| format!("Request build error: {}", e))?
@@ -101,6 +202,38 @@ pub async fn create_session(base: &str, name: &str) -> Result<CreatedSession, St
         .map_err(|e| format!("Parse error: {}", e))
 }
 
+/// Fetch server configuration.
+pub async fn get_config(base: &str) -> Result<ServerConfig, String> {
+    let resp = with_auth(Request::get(&format!("{}/v1/config", base)))
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !resp.ok() {
+        return Err(format!("Failed to get config: {}", resp.status()));
+    }
+
+    resp.json::<ServerConfig>()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+/// Fetch message history for a session.
+pub async fn get_session_messages(base: &str, session_id: &str) -> Result<Vec<HistoryMessage>, String> {
+    let resp = with_auth(Request::get(&format!("{}/v1/sessions/{}/messages", base, session_id)))
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !resp.ok() {
+        return Err(format!("Failed to get messages: {}", resp.status()));
+    }
+
+    resp.json::<Vec<HistoryMessage>>()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
 /// Stream a chat completion via POST with SSE response.
 ///
 /// Uses the Fetch API directly because browser EventSource only supports GET,
@@ -108,13 +241,17 @@ pub async fn create_session(base: &str, name: &str) -> Result<CreatedSession, St
 pub async fn stream_chat(
     base: &str,
     message: &str,
+    session_id: Option<&str>,
     on_event: impl Fn(StreamEvent) + 'static,
 ) -> Result<(), String> {
     let url = format!("{}/v1/chat/completions", base);
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "messages": [{ "role": "user", "content": message }],
         "stream": true
     });
+    if let Some(sid) = session_id {
+        body["session_id"] = serde_json::json!(sid);
+    }
 
     // Use web_sys Fetch API for streaming response body.
     let opts = web_sys::RequestInit::new();
@@ -125,6 +262,7 @@ pub async fn stream_chat(
     headers
         .set("Content-Type", "application/json")
         .map_err(|_| "Failed to set header")?;
+    apply_auth(&headers);
     opts.set_headers(&headers);
 
     let js_body = JsValue::from_str(&body.to_string());
@@ -223,6 +361,149 @@ pub async fn stream_chat(
     }
 
     Ok(())
+}
+
+/// Convert markdown text to HTML for display.
+///
+/// Handles fenced code blocks, inline code, bold, italic, headers, and lists.
+/// This is intentionally minimal — no external crate dependency.
+pub fn markdown_to_html(input: &str) -> String {
+    let mut html = String::with_capacity(input.len() * 2);
+    let mut in_code_block = false;
+    let mut in_list = false;
+
+    for line in input.lines() {
+        // Fenced code blocks.
+        if line.starts_with("```") {
+            if in_code_block {
+                html.push_str("</code></pre>");
+                in_code_block = false;
+            } else {
+                if in_list {
+                    html.push_str("</ul>");
+                    in_list = false;
+                }
+                let lang = line.trim_start_matches('`').trim();
+                if lang.is_empty() {
+                    html.push_str("<pre><code>");
+                } else {
+                    html.push_str(&format!("<pre><code class=\"lang-{}\">", escape_html(lang)));
+                }
+                in_code_block = true;
+            }
+            continue;
+        }
+        if in_code_block {
+            html.push_str(&escape_html(line));
+            html.push('\n');
+            continue;
+        }
+
+        let trimmed = line.trim();
+
+        // Blank line — close list if open.
+        if trimmed.is_empty() {
+            if in_list {
+                html.push_str("</ul>");
+                in_list = false;
+            }
+            html.push_str("<br>");
+            continue;
+        }
+
+        // Headers.
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            html.push_str(&format!("<h3>{}</h3>", inline_md(rest)));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            html.push_str(&format!("<h2>{}</h2>", inline_md(rest)));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            html.push_str(&format!("<h1>{}</h1>", inline_md(rest)));
+            continue;
+        }
+
+        // Unordered list.
+        if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
+            if !in_list {
+                html.push_str("<ul>");
+                in_list = true;
+            }
+            html.push_str(&format!("<li>{}</li>", inline_md(&trimmed[2..])));
+            continue;
+        }
+
+        // Close list if this line isn't a list item.
+        if in_list {
+            html.push_str("</ul>");
+            in_list = false;
+        }
+
+        // Normal paragraph line.
+        html.push_str(&format!("<p>{}</p>", inline_md(trimmed)));
+    }
+
+    if in_code_block {
+        html.push_str("</code></pre>");
+    }
+    if in_list {
+        html.push_str("</ul>");
+    }
+
+    html
+}
+
+/// Process inline markdown: bold, italic, inline code.
+fn inline_md(text: &str) -> String {
+    let escaped = escape_html(text);
+    // Inline code first (so bold/italic don't interfere inside backticks).
+    let mut result = String::new();
+    let mut parts = escaped.split('`');
+    if let Some(first) = parts.next() {
+        result.push_str(&bold_italic(first));
+    }
+    let mut in_code = false;
+    for part in parts {
+        if in_code {
+            result.push_str(&format!("<code>{}</code>", part));
+        } else {
+            result.push_str(&bold_italic(part));
+        }
+        in_code = !in_code;
+    }
+    result
+}
+
+fn bold_italic(text: &str) -> String {
+    // **bold** then *italic*
+    let mut s = text.to_string();
+    // Bold: **...**
+    while let Some(start) = s.find("**") {
+        if let Some(end) = s[start + 2..].find("**") {
+            let inner = &s[start + 2..start + 2 + end].to_string();
+            s = format!("{}<strong>{}</strong>{}", &s[..start], inner, &s[start + 2 + end + 2..]);
+        } else {
+            break;
+        }
+    }
+    // Italic: *...*
+    while let Some(start) = s.find('*') {
+        if let Some(end) = s[start + 1..].find('*') {
+            let inner = &s[start + 1..start + 1 + end].to_string();
+            s = format!("{}<em>{}</em>{}", &s[..start], inner, &s[start + 1 + end + 1..]);
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Parse a single SSE frame.
