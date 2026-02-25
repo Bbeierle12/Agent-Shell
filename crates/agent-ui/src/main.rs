@@ -46,6 +46,13 @@ enum ConnStatus {
     Disconnected,
 }
 
+/// Main content view mode.
+#[derive(Clone, Debug, PartialEq)]
+enum ViewMode {
+    Chat,
+    Analytics,
+}
+
 /// Convert history messages from the server into ChatItems.
 fn history_to_chat_items(messages: &[api::HistoryMessage]) -> Vec<ChatItem> {
     let mut items = Vec::new();
@@ -116,6 +123,7 @@ fn App() -> impl IntoView {
     let (conn_status, set_conn_status) = signal(ConnStatus::Checking);
     let (show_settings, set_show_settings) = signal(false);
     let (server_config, set_server_config) = signal(Option::<api::ServerConfig>::None);
+    let (view_mode, set_view_mode) = signal(ViewMode::Chat);
     let api_base = api::detect_api_base();
 
     // Check backend health on mount and load config.
@@ -338,14 +346,26 @@ fn App() -> impl IntoView {
                 on_settings=move || set_show_settings.set(true)
             />
             <div class="chat-area">
-                <ChatHeader config=server_config />
-                <MessageList messages=messages set_messages=set_messages />
-                <InputBar
-                    input=input
-                    set_input=set_input
-                    is_streaming=is_streaming
-                    on_send=on_send
+                <ChatHeader
+                    config=server_config
+                    view_mode=view_mode
+                    set_view_mode=set_view_mode
                 />
+                {move || {
+                    if view_mode.get() == ViewMode::Analytics {
+                        view! { <AnalyticsDashboard api_base=api_base.clone() /> }.into_any()
+                    } else {
+                        view! {
+                            <MessageList messages=messages set_messages=set_messages />
+                            <InputBar
+                                input=input
+                                set_input=set_input
+                                is_streaming=is_streaming
+                                on_send=on_send.clone()
+                            />
+                        }.into_any()
+                    }
+                }}
             </div>
         </div>
         {move || {
@@ -366,7 +386,11 @@ fn App() -> impl IntoView {
 // ── Chat Header ─────────────────────────────────────────────────────────
 
 #[component]
-fn ChatHeader(config: ReadSignal<Option<api::ServerConfig>>) -> impl IntoView {
+fn ChatHeader(
+    config: ReadSignal<Option<api::ServerConfig>>,
+    view_mode: ReadSignal<ViewMode>,
+    set_view_mode: WriteSignal<ViewMode>,
+) -> impl IntoView {
     view! {
         <div class="chat-header">
             <span class="chat-title">"Agent Shell"</span>
@@ -377,6 +401,18 @@ fn ChatHeader(config: ReadSignal<Option<api::ServerConfig>>) -> impl IntoView {
                     }
                 })
             }}
+            <div class="header-tabs">
+                <button
+                    class:tab-btn=true
+                    class:active=move || view_mode.get() == ViewMode::Chat
+                    on:click=move |_| set_view_mode.set(ViewMode::Chat)
+                >"Chat"</button>
+                <button
+                    class:tab-btn=true
+                    class:active=move || view_mode.get() == ViewMode::Analytics
+                    on:click=move |_| set_view_mode.set(ViewMode::Analytics)
+                >"Analytics"</button>
+            </div>
         </div>
     }
 }
@@ -556,6 +592,180 @@ fn SettingsModal(
                     }}
                 </div>
             </div>
+        </div>
+    }
+}
+
+// ── Analytics Dashboard ─────────────────────────────────────────────────
+
+#[component]
+fn AnalyticsDashboard(api_base: String) -> impl IntoView {
+    let (summary, set_summary) = signal(Option::<api::AnalyticsSummary>::None);
+    let (report, set_report) = signal(Option::<String>::None);
+    let (report_period, set_report_period) = signal("week".to_string());
+    let (loading, set_loading) = signal(true);
+
+    // Load summary on mount.
+    {
+        let base = api_base.clone();
+        spawn_local(async move {
+            if let Ok(s) = api::get_analytics_summary(&base).await {
+                set_summary.set(Some(s));
+            }
+            set_loading.set(false);
+        });
+    }
+
+    // Load report when period changes.
+    {
+        let base = api_base.clone();
+        spawn_local(async move {
+            if let Ok(r) = api::get_analytics_report(&base, "week").await {
+                set_report.set(Some(r));
+            }
+        });
+    }
+
+    let load_report = {
+        let base = api_base.clone();
+        move |period: String| {
+            set_report_period.set(period.clone());
+            set_report.set(None);
+            let base = base.clone();
+            spawn_local(async move {
+                if let Ok(r) = api::get_analytics_report(&base, &period).await {
+                    set_report.set(Some(r));
+                }
+            });
+        }
+    };
+
+    view! {
+        <div class="analytics-dashboard">
+            {move || {
+                if loading.get() {
+                    return view! { <div class="analytics-loading">"Loading analytics..."</div> }.into_any();
+                }
+
+                match summary.get() {
+                    Some(s) => {
+                        let avg_duration = s.average_session_duration_secs
+                            .map(|secs| {
+                                let m = secs / 60;
+                                let h = m / 60;
+                                if h > 0 { format!("{}h {}m", h, m % 60) } else { format!("{}m", m) }
+                            })
+                            .unwrap_or_else(|| "—".to_string());
+
+                        let top_tools = s.top_tools.clone();
+
+                        view! {
+                            <div class="analytics-content">
+                                <div class="stats-grid">
+                                    <div class="stat-card">
+                                        <div class="stat-value">{s.total_sessions}</div>
+                                        <div class="stat-label">"Total Sessions"</div>
+                                    </div>
+                                    <div class="stat-card">
+                                        <div class="stat-value">{s.active_days}</div>
+                                        <div class="stat-label">"Active Days"</div>
+                                    </div>
+                                    <div class="stat-card">
+                                        <div class="stat-value">{avg_duration}</div>
+                                        <div class="stat-label">"Avg Session"</div>
+                                    </div>
+                                    <div class="stat-card">
+                                        <div class="stat-value">{s.deep_work_sessions}</div>
+                                        <div class="stat-label">"Deep Work"</div>
+                                    </div>
+                                </div>
+
+                                {if let Some(today) = s.today.clone() {
+                                    view! {
+                                        <div class="today-section">
+                                            <h3>"Today"</h3>
+                                            <div class="today-stats">
+                                                <span>{format!("{} sessions", today.sessions)}</span>
+                                                <span>{format!("{} messages", today.messages)}</span>
+                                                <span>{today.active_time.clone()}</span>
+                                                <span>{format!("{} tool calls", today.tool_calls)}</span>
+                                                {if today.tool_errors > 0 {
+                                                    view! { <span class="error-text">{format!("{} errors", today.tool_errors)}</span> }.into_any()
+                                                } else {
+                                                    view! { <span></span> }.into_any()
+                                                }}
+                                            </div>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! { <div></div> }.into_any()
+                                }}
+
+                                {if !top_tools.is_empty() {
+                                    view! {
+                                        <div class="top-tools-section">
+                                            <h3>"Top Tools"</h3>
+                                            <div class="tools-bar-chart">
+                                                {top_tools.iter().map(|(name, count)| {
+                                                    let max = top_tools.first().map(|(_, c)| *c).unwrap_or(1);
+                                                    let pct = (*count as f64 / max as f64 * 100.0) as u32;
+                                                    let name = name.clone();
+                                                    let count = *count;
+                                                    view! {
+                                                        <div class="bar-row">
+                                                            <span class="bar-label">{name}</span>
+                                                            <div class="bar-track">
+                                                                <div class="bar-fill" style=format!("width: {}%", pct)></div>
+                                                            </div>
+                                                            <span class="bar-count">{count}</span>
+                                                        </div>
+                                                    }
+                                                }).collect::<Vec<_>>()}
+                                            </div>
+                                        </div>
+                                    }.into_any()
+                                } else {
+                                    view! { <div></div> }.into_any()
+                                }}
+
+                                <div class="report-section">
+                                    <div class="report-header">
+                                        <h3>"Report"</h3>
+                                        <div class="report-tabs">
+                                            <button
+                                                class:report-tab=true
+                                                class:active=move || report_period.get() == "week"
+                                                on:click={
+                                                    let load_report = load_report.clone();
+                                                    move |_| load_report("week".to_string())
+                                                }
+                                            >"Weekly"</button>
+                                            <button
+                                                class:report-tab=true
+                                                class:active=move || report_period.get() == "month"
+                                                on:click={
+                                                    let load_report = load_report.clone();
+                                                    move |_| load_report("month".to_string())
+                                                }
+                                            >"Monthly"</button>
+                                        </div>
+                                    </div>
+                                    {move || match report.get() {
+                                        Some(md) => {
+                                            let html = api::markdown_to_html(&md);
+                                            view! { <div class="report-body md-content" inner_html=html></div> }.into_any()
+                                        }
+                                        None => view! { <div class="report-body">"Loading report..."</div> }.into_any(),
+                                    }}
+                                </div>
+                            </div>
+                        }.into_any()
+                    }
+                    None => view! {
+                        <div class="analytics-empty">"No analytics data available."</div>
+                    }.into_any(),
+                }
+            }}
         </div>
     }
 }

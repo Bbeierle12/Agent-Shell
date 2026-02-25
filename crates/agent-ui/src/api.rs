@@ -132,6 +132,26 @@ pub struct SandboxInfo {
     pub timeout_secs: u64,
 }
 
+/// Analytics summary from the server.
+#[derive(Clone, Debug, Deserialize)]
+pub struct AnalyticsSummary {
+    pub total_sessions: usize,
+    pub active_days: usize,
+    pub average_session_duration_secs: Option<u64>,
+    pub top_tools: Vec<(String, u32)>,
+    pub deep_work_sessions: usize,
+    pub today: Option<DaySummary>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DaySummary {
+    pub sessions: u32,
+    pub messages: u32,
+    pub active_time: String,
+    pub tool_calls: u32,
+    pub tool_errors: u32,
+}
+
 /// Events emitted during SSE streaming.
 #[derive(Debug)]
 pub enum StreamEvent {
@@ -230,6 +250,38 @@ pub async fn get_session_messages(base: &str, session_id: &str) -> Result<Vec<Hi
     }
 
     resp.json::<Vec<HistoryMessage>>()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+/// Fetch analytics summary.
+pub async fn get_analytics_summary(base: &str) -> Result<AnalyticsSummary, String> {
+    let resp = with_auth(Request::get(&format!("{}/v1/analytics/summary", base)))
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !resp.ok() {
+        return Err(format!("Failed to get analytics: {}", resp.status()));
+    }
+
+    resp.json::<AnalyticsSummary>()
+        .await
+        .map_err(|e| format!("Parse error: {}", e))
+}
+
+/// Fetch analytics report (markdown).
+pub async fn get_analytics_report(base: &str, period: &str) -> Result<String, String> {
+    let resp = with_auth(Request::get(&format!("{}/v1/analytics/report?period={}", base, period)))
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {}", e))?;
+
+    if !resp.ok() {
+        return Err(format!("Failed to get report: {}", resp.status()));
+    }
+
+    resp.text()
         .await
         .map_err(|e| format!("Parse error: {}", e))
 }
