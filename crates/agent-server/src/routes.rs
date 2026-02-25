@@ -249,7 +249,12 @@ struct SandboxConfigResponse {
 
 async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     let c = &state.config;
-    let tools: Vec<String> = state.tool_registry.list_names().iter().map(|n| n.to_string()).collect();
+    let tools: Vec<String> = state
+        .tool_registry
+        .list_names()
+        .iter()
+        .map(|n| n.to_string())
+        .collect();
     Json(ConfigResponse {
         provider: ProviderConfigResponse {
             api_base: c.provider.api_base.clone(),
@@ -835,7 +840,6 @@ pub fn spa_routes() -> Router<AppState> {
 
     let index_path = dist_path.join("index.html");
 
-    Router::new().fallback_service(
-        ServeDir::new(&dist_path).not_found_service(ServeFile::new(&index_path)),
-    )
+    Router::new()
+        .fallback_service(ServeDir::new(&dist_path).not_found_service(ServeFile::new(&index_path)))
 }
