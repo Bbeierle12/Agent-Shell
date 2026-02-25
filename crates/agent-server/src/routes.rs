@@ -814,3 +814,28 @@ async fn create_session(
         "name": session.name,
     })))
 }
+
+// ── SPA Static Files ────────────────────────────────────────────────────
+//
+// Serves the built React UI from crates/agent-ui/dist/.
+// Falls back to index.html for all unmatched GET requests (client-side routing).
+// The AGENT_UI_DIST env var overrides the default path.
+
+pub fn spa_routes() -> Router<AppState> {
+    use std::path::PathBuf;
+    use tower_http::services::{ServeDir, ServeFile};
+
+    let dist_path = std::env::var("AGENT_UI_DIST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("crates/agent-ui/dist")
+        });
+
+    let index_path = dist_path.join("index.html");
+
+    Router::new().fallback_service(
+        ServeDir::new(&dist_path).not_found_service(ServeFile::new(&index_path)),
+    )
+}

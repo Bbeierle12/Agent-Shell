@@ -63,9 +63,12 @@ pub fn build_router(state: AppState) -> Router {
     // Public routes (health) — never require auth.
     let public = Router::new().merge(routes::health_routes());
 
+    let spa = routes::spa_routes();
+
     let mut app = Router::new()
         .merge(protected)
         .merge(public)
+        .merge(spa)
         .with_state(state.clone());
 
     // Middleware stack.
