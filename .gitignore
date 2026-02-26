@@ -1,1 +1,7 @@
 /target
+
+# Python agent
+agent-py/.venv/
+agent-py/__pycache__/
+agent-py/.env
+*.pyc

@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Ollama Agent (HTTP Server)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        "host": "localhost",
+        "port": 5679
+      },
+      "preLaunchTask": "Open Agent Inspector",
+      "internalConsoleOptions": "neverOpen",
+      "postDebugTask": "Terminate All Tasks"
+    },
+    {
+      "name": "Debug Ollama Agent (CLI)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+        "host": "localhost",
+        "port": 5679
+      },
+      "preLaunchTask": "Run Agent in Terminal (CLI)",
+      "internalConsoleOptions": "neverOpen",
+      "postDebugTask": "Terminate All Tasks"
+    }
+  ]
+}

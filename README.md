@@ -87,6 +87,12 @@ agent-shell (binary)
     └── state.rs         Shared application state
 ```
 
+## Python Agent (agent-py/)
+
+A Python-based AI agent powered by **Microsoft Agent Framework + Ollama** that runs alongside the Rust binary as a sidecar. Provides an OpenAI-compatible HTTP API with 8 agentic tools and optional delegation to the Rust agent-shell for sandboxed execution.
+
+See [agent-py/README.md](agent-py/README.md) for setup and usage.
+
 ## License
 
 MIT
