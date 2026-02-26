@@ -105,22 +105,29 @@ impl Session {
     }
 
     /// Persist this session to disk as JSON.
+    ///
+    /// Uses atomic write (temp file + rename) to prevent corruption on crash.
     pub fn save_to(&self, dir: &Path) -> Result<(), AgentError> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{}.json", self.id));
+        let tmp_path = dir.join(format!(".{}.json.tmp", self.id));
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        std::fs::write(&tmp_path, &json)?;
+        std::fs::rename(&tmp_path, &path)?;
         Ok(())
     }
 
     /// Persist this session to disk as JSON (async / non-blocking).
     ///
     /// Preferred inside async contexts; avoids blocking Tokio worker threads.
+    /// Uses atomic write (temp file + rename) to prevent corruption on crash.
     pub async fn save_to_async(&self, dir: &Path) -> Result<(), AgentError> {
         async_fs::create_dir_all(dir).await?;
         let path = dir.join(format!("{}.json", self.id));
+        let tmp_path = dir.join(format!(".{}.json.tmp", self.id));
         let json = serde_json::to_string_pretty(self)?;
-        async_fs::write(path, json).await?;
+        async_fs::write(&tmp_path, &json).await?;
+        async_fs::rename(&tmp_path, &path).await?;
         Ok(())
     }
 

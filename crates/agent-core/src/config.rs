@@ -286,6 +286,9 @@ pub struct ServerConfig {
     pub auth_token: Option<String>,
     /// Enable CORS.
     pub cors: bool,
+    /// Allowed CORS origins when auth is enabled.
+    /// Defaults to `["http://localhost:{port}"]` if empty.
+    pub cors_origins: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -295,6 +298,7 @@ impl Default for ServerConfig {
             port: 8080,
             auth_token: None,
             cors: true,
+            cors_origins: Vec::new(),
         }
     }
 }

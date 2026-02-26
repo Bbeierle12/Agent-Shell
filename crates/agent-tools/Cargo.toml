@@ -19,6 +19,7 @@ tracing = { workspace = true }
 reqwest = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
+futures = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

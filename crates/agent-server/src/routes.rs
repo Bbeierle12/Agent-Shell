@@ -16,6 +16,23 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
 
+/// Validate that a session ID is a valid UUID to prevent path traversal.
+fn validate_session_id(id: &str) -> Result<(), (StatusCode, String)> {
+    // Accept standard UUID format: 8-4-4-4-12 hex digits.
+    let is_valid = id.len() == 36
+        && id.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    if !is_valid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Invalid session ID format (expected UUID)".into(),
+        ));
+    }
+    Ok(())
+}
+
 // ── Health ──────────────────────────────────────────────────────────────
 
 pub fn health_routes() -> Router<AppState> {
@@ -40,8 +57,9 @@ struct ChatRequest {
     messages: Vec<ChatMessage>,
     #[serde(default)]
     stream: bool,
+    /// Optional session ID. If provided, messages are routed to this session.
+    /// If absent, the active/default session is used.
     #[serde(default)]
-    #[allow(dead_code)]
     session_id: Option<String>,
 }
 
@@ -54,6 +72,8 @@ struct ChatMessage {
 #[derive(Debug, Serialize)]
 struct ChatResponse {
     id: String,
+    /// The session ID that this response belongs to.
+    session_id: Option<String>,
     choices: Vec<ChatChoice>,
 }
 
@@ -68,13 +88,22 @@ async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    // Convert API messages to our internal type.
+    // Only the last message is used as the new user input.
+    // Full conversation history is managed server-side via sessions.
     let user_msg = req
         .messages
         .last()
         .ok_or((StatusCode::BAD_REQUEST, "No messages provided".into()))?;
 
     let message = Message::user(&user_msg.content);
+
+    // If session_id is provided, switch to that session.
+    if let Some(ref sid) = req.session_id {
+        validate_session_id(sid)?;
+        let mut sm = state.session_manager.write().await;
+        sm.switch_session(sid)
+            .map_err(|e| (StatusCode::NOT_FOUND, format!("Session not found: {}", e)))?;
+    }
 
     // Add message to session (non-blocking async save).
     {
@@ -84,10 +113,13 @@ async fn chat_completions(
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
-    // Get message history.
-    let messages: Vec<Message> = {
+    // Get message history and active session ID.
+    let (messages, active_session_id): (Vec<Message>, Option<String>) = {
         let sm = state.session_manager.read().await;
-        sm.recent_messages().into_iter().cloned().collect()
+        (
+            sm.recent_messages().into_iter().cloned().collect(),
+            sm.active_session_id().map(String::from),
+        )
     };
 
     if req.stream {
@@ -154,6 +186,7 @@ async fn chat_completions(
 
         let response = ChatResponse {
             id: result.id.clone(),
+            session_id: active_session_id,
             choices: vec![ChatChoice {
                 index: 0,
                 message: ChatMessage {
@@ -294,6 +327,9 @@ async fn get_session_messages(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Validate session ID is a UUID to prevent path traversal attacks.
+    validate_session_id(&id)?;
+
     let sessions_dir = state
         .config
         .session

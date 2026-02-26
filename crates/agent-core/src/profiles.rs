@@ -1,18 +1,21 @@
 //! Named profile system for workspace-specific configuration.
 //!
 //! Profiles override top-level AppConfig fields (model, API base, system prompt,
-//! working directory, tool allow/deny lists, environment variables) so the user
-//! can switch contexts without editing the config file.
+//! max_tokens, temperature) so the user can switch contexts without editing the
+//! config file.
 //!
 //! Ported from Claude-Code-CLI-Launcher workspace concepts.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use crate::config::AppConfig;
 
 /// A named profile that selectively overrides AppConfig fields.
+///
+/// Currently supported overrides: model, api_base, system_prompt, max_tokens,
+/// temperature. Additional overrides (working_dir, tool allow/deny lists,
+/// env_vars) may be added in future versions.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProfileConfig {
@@ -24,14 +27,6 @@ pub struct ProfileConfig {
     pub api_base: Option<String>,
     /// Override the system prompt.
     pub system_prompt: Option<String>,
-    /// Working directory for this profile.
-    pub working_dir: Option<PathBuf>,
-    /// Environment variables to set when this profile is active.
-    pub env_vars: HashMap<String, String>,
-    /// Tool allowlist — if set, only these tools are available.
-    pub allowed_tools: Option<Vec<String>>,
-    /// Tool denylist — these tools are blocked.
-    pub disallowed_tools: Vec<String>,
     /// Maximum tokens override.
     pub max_tokens: Option<u32>,
     /// Temperature override.
@@ -166,31 +161,17 @@ mod tests {
     }
 
     #[test]
-    fn test_profile_env_vars() {
-        let mut profile = ProfileConfig::default();
-        profile.env_vars.insert("RUST_LOG".into(), "debug".into());
-        profile
-            .env_vars
-            .insert("MY_API_KEY".into(), "test123".into());
-        assert_eq!(profile.env_vars.len(), 2);
-        assert_eq!(profile.env_vars["RUST_LOG"], "debug");
-    }
-
-    #[test]
     fn test_profile_serialization() {
         let profile = ProfileConfig {
             description: Some("Dev profile".into()),
             model: Some("llama3".into()),
-            working_dir: Some(PathBuf::from("/home/user/projects")),
+            temperature: Some(0.7),
             ..Default::default()
         };
         let toml_str = toml::to_string_pretty(&profile).unwrap();
         let parsed: ProfileConfig = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.description.as_deref(), Some("Dev profile"));
         assert_eq!(parsed.model.as_deref(), Some("llama3"));
-        assert_eq!(
-            parsed.working_dir,
-            Some(PathBuf::from("/home/user/projects"))
-        );
+        assert_eq!(parsed.temperature, Some(0.7));
     }
 }

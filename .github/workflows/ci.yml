@@ -3,7 +3,7 @@ name: CI
 on: [push, pull_request]
 
 jobs:
-  check:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,3 +13,23 @@ jobs:
       - run: cargo clippy --workspace --tests -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --release
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cd crates/agent-ui && npm ci && npm run build
+      - run: test -d crates/agent-ui/dist
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r agent-py/requirements.txt
+      - run: python -m compileall agent-py/

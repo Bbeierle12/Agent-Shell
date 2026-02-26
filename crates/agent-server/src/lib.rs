@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Router;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 pub use state::AppState;
@@ -56,20 +56,30 @@ pub fn build_router(state: AppState) -> Router {
     let config = &state.config;
 
     // Protected routes (chat, sessions, plugins) — require auth when token is configured.
-    let protected = Router::new()
+    let mut protected = Router::new()
         .merge(routes::chat_routes())
         .merge(routes::session_routes())
         .merge(routes::session_message_routes())
         .merge(routes::config_routes())
         .merge(routes::plugin_routes())
         .merge(routes::skill_routes())
-        .merge(routes::terminal_routes())
         .merge(routes::context_routes())
-        .merge(routes::analytics_routes())
-        .route_layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ));
+        .merge(routes::analytics_routes());
+
+    // Terminal routes expose a remote shell — only enable when auth is configured.
+    if config.server.auth_token.is_some() {
+        protected = protected.merge(routes::terminal_routes());
+    } else {
+        tracing::warn!(
+            "Terminal WebSocket disabled: auth_token is not configured. \
+             Set server.auth_token in config to enable the terminal endpoint."
+        );
+    }
+
+    let protected = protected.route_layer(middleware::from_fn_with_state(
+        state.clone(),
+        auth_middleware,
+    ));
 
     // Public routes (health) — never require auth.
     let public = Router::new().merge(routes::health_routes());
@@ -89,13 +99,21 @@ pub fn build_router(state: AppState) -> Router {
     if config.server.cors {
         let cors = if config.server.auth_token.is_some() {
             // Restrictive CORS when auth is enabled.
+            let origins: Vec<String> = if config.server.cors_origins.is_empty() {
+                // Default: only allow the local UI origin.
+                vec![format!("http://localhost:{}", config.server.port)]
+            } else {
+                config.server.cors_origins.clone()
+            };
+            let parsed_origins: Vec<axum::http::HeaderValue> =
+                origins.iter().filter_map(|o| o.parse().ok()).collect();
             CorsLayer::new()
                 .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
                 .allow_headers([
                     axum::http::header::CONTENT_TYPE,
                     axum::http::header::AUTHORIZATION,
                 ])
-                .allow_origin(Any)
+                .allow_origin(parsed_origins)
         } else {
             // Permissive CORS for local dev (no auth).
             CorsLayer::permissive()
@@ -244,5 +262,33 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         // Without auth configured, requests should pass through (not 401).
         assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_session_id_rejects_non_uuid() {
+        let app = test_router(None);
+
+        // Non-UUID session IDs should be rejected to prevent path traversal.
+        let req = Request::builder()
+            .uri("/v1/sessions/not-a-valid-uuid/messages")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_session_id_valid_uuid_accepted() {
+        let app = test_router(None);
+
+        // Valid UUID format should not get 400 (may get 404 if session doesn't exist).
+        let req = Request::builder()
+            .uri("/v1/sessions/550e8400-e29b-41d4-a716-446655440000/messages")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -302,7 +302,7 @@ impl Tool for FileListTool {
         let path_str = validated_path.to_string_lossy().to_string();
 
         if args.recursive {
-            list_recursive(&path_str, &path_str).await
+            list_recursive(&path_str, &self.workspace_root).await
         } else {
             list_flat(&path_str).await
         }
@@ -338,11 +338,29 @@ async fn list_flat(path: &str) -> Result<String, AgentError> {
     Ok(names.join("\n"))
 }
 
-async fn list_recursive(_base: &str, current: &str) -> Result<String, AgentError> {
-    let mut result = Vec::new();
-    let mut stack = vec![current.to_string()];
+/// Maximum recursion depth to prevent runaway traversals.
+const MAX_RECURSION_DEPTH: usize = 20;
 
-    while let Some(dir) = stack.pop() {
+async fn list_recursive(
+    current: &str,
+    workspace_root: &Option<PathBuf>,
+) -> Result<String, AgentError> {
+    let mut result = Vec::new();
+    // (directory path, depth)
+    let mut stack: Vec<(String, usize)> = vec![(current.to_string(), 0)];
+    // Track visited canonical paths to detect symlink cycles.
+    let mut visited = std::collections::HashSet::new();
+
+    // Seed visited set with the starting directory.
+    if let Ok(canon) = tokio::fs::canonicalize(current).await {
+        visited.insert(canon);
+    }
+
+    while let Some((dir, depth)) = stack.pop() {
+        if depth >= MAX_RECURSION_DEPTH {
+            continue;
+        }
+
         let mut entries =
             tokio::fs::read_dir(&dir)
                 .await
@@ -362,10 +380,61 @@ async fn list_recursive(_base: &str, current: &str) -> Result<String, AgentError
         {
             let path = entry.path();
             let display = path.to_string_lossy().to_string();
-            let meta = entry.metadata().await.ok();
-            if meta.map(|m| m.is_dir()).unwrap_or(false) {
-                result.push(format!("{}/", display));
-                stack.push(display);
+
+            // Use file_type() which does NOT follow symlinks (like lstat).
+            let ft = match entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+
+            if ft.is_symlink() {
+                // For symlinks, resolve the target and validate it's within workspace.
+                let target = match tokio::fs::canonicalize(&path).await {
+                    Ok(t) => t,
+                    Err(_) => {
+                        // Dangling symlink — list it but don't traverse.
+                        result.push(format!("{} -> [broken symlink]", display));
+                        continue;
+                    }
+                };
+
+                if let Some(root) = workspace_root {
+                    if let Ok(canon_root) = root.canonicalize() {
+                        if !target.starts_with(&canon_root) {
+                            // Symlink points outside workspace — skip.
+                            result.push(format!(
+                                "{} -> [symlink outside workspace, skipped]",
+                                display
+                            ));
+                            continue;
+                        }
+                    }
+                }
+
+                // Symlink target is within workspace. Check if it's a directory.
+                let target_meta = match tokio::fs::metadata(&target).await {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if target_meta.is_dir() {
+                    // Cycle detection: only traverse if we haven't visited this canonical path.
+                    if visited.insert(target) {
+                        result.push(format!("{}/", display));
+                        stack.push((display, depth + 1));
+                    } else {
+                        result.push(format!("{} -> [symlink cycle, skipped]", display));
+                    }
+                } else {
+                    result.push(display);
+                }
+            } else if ft.is_dir() {
+                // Real directory (not a symlink). Cycle detection via canonical path.
+                let canon = tokio::fs::canonicalize(&path).await.ok();
+                let is_new = canon.is_none_or(|c| visited.insert(c));
+                if is_new {
+                    result.push(format!("{}/", display));
+                    stack.push((display, depth + 1));
+                }
             } else {
                 result.push(display);
             }
@@ -487,5 +556,64 @@ mod tests {
         let result = tool.execute(json!({"path": file.to_str().unwrap()})).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn test_recursive_list_skips_symlink_outside_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+
+        // Create a subdirectory and a file inside it.
+        let subdir = workspace.join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        std::fs::write(subdir.join("file.txt"), "ok").unwrap();
+
+        // Create a symlink pointing outside the workspace (to /tmp or similar).
+        let escape_link = workspace.join("escape");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("/usr", &escape_link).unwrap();
+
+        let tool = FileListTool {
+            workspace_root: Some(workspace.clone()),
+        };
+        let result = tool
+            .execute(json!({"path": workspace.to_str().unwrap(), "recursive": true}))
+            .await;
+        assert!(result.is_ok());
+        let listing = result.unwrap();
+
+        // The symlink should be marked as skipped, not traversed.
+        assert!(
+            listing.contains("skipped"),
+            "symlink outside workspace should be skipped, got:\n{listing}"
+        );
+        // /usr contents should NOT appear.
+        assert!(
+            !listing.contains("/usr/"),
+            "should not traverse outside workspace, got:\n{listing}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recursive_list_detects_symlink_cycle() {
+        let tmp = TempDir::new().unwrap();
+        let workspace = tmp.path().to_path_buf();
+
+        let subdir = workspace.join("a");
+        std::fs::create_dir(&subdir).unwrap();
+
+        // Create a symlink cycle: a/loop -> workspace (which contains a/)
+        let loop_link = subdir.join("loop");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&workspace, &loop_link).unwrap();
+
+        let tool = FileListTool {
+            workspace_root: Some(workspace.clone()),
+        };
+        let result = tool
+            .execute(json!({"path": workspace.to_str().unwrap(), "recursive": true}))
+            .await;
+        // Should complete without infinite loop.
+        assert!(result.is_ok());
     }
 }

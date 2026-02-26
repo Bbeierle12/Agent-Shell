@@ -26,15 +26,14 @@ impl WebFetchTool {
 
     /// Build a per-request client whose DNS is pinned to the pre-validated
     /// IP addresses, closing the TOCTOU window.
-    fn build_pinned_client(
-        domain: &str,
-        port: u16,
-        addrs: &[SocketAddr],
-    ) -> reqwest::Client {
+    ///
+    /// Uses a custom redirect policy that validates each redirect target
+    /// through the same SSRF checks as the initial request.
+    fn build_pinned_client(domain: &str, port: u16, addrs: &[SocketAddr]) -> reqwest::Client {
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent("agent-shell/0.1")
-            .redirect(reqwest::redirect::Policy::limited(5));
+            .redirect(ssrf_safe_redirect_policy());
 
         // Pin every validated address so reqwest never re-resolves.
         for addr in addrs {
@@ -48,6 +47,28 @@ impl WebFetchTool {
 
         builder.build().unwrap_or_default()
     }
+}
+
+/// Maximum response body size to buffer (2 MB). Prevents OOM from huge responses.
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// Custom redirect policy that validates each redirect target through SSRF checks.
+///
+/// Without this, a public URL could 302 to `http://127.0.0.1/...` and reqwest
+/// would follow it, bypassing the initial SSRF validation.
+fn ssrf_safe_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            attempt.error("too many redirects")
+        } else {
+            let url = attempt.url();
+            // Validate the redirect target through the same SSRF checks.
+            match validate_url_not_internal(url.as_str()) {
+                Ok(_) => attempt.follow(),
+                Err(e) => attempt.error(format!("redirect blocked by SSRF check: {}", e)),
+            }
+        }
+    })
 }
 
 /// Check if an IP address is in a private/internal range.
@@ -165,13 +186,12 @@ pub(crate) fn validate_url_not_internal(raw_url: &str) -> Result<ValidatedUrl, A
     if let Some(url::Host::Domain(domain)) = parsed.host() {
         let domain_owned = domain.to_string();
         let addr_str = format!("{}:{}", domain_owned, port);
-        let addrs: Vec<SocketAddr> =
-            std::net::ToSocketAddrs::to_socket_addrs(&addr_str)
-                .map_err(|e| AgentError::ToolExecution {
-                    tool_name: "web_fetch".into(),
-                    message: format!("DNS resolution failed for '{}': {}", domain_owned, e),
-                })?
-                .collect();
+        let addrs: Vec<SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(&addr_str)
+            .map_err(|e| AgentError::ToolExecution {
+                tool_name: "web_fetch".into(),
+                message: format!("DNS resolution failed for '{}': {}", domain_owned, e),
+            })?
+            .collect();
 
         if addrs.is_empty() {
             return Err(AgentError::ToolExecution {
@@ -264,7 +284,7 @@ impl Tool for WebFetchTool {
             reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .user_agent("agent-shell/0.1")
-                .redirect(reqwest::redirect::Policy::limited(5))
+                .redirect(ssrf_safe_redirect_policy())
                 .build()
                 .unwrap_or_default()
         };
@@ -279,22 +299,41 @@ impl Tool for WebFetchTool {
             })?;
 
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| AgentError::ToolExecution {
+
+        // Stream the response body with a hard byte cap to prevent OOM.
+        use futures::StreamExt;
+        let mut stream = response.bytes_stream();
+        let mut buf = Vec::new();
+        let mut hit_limit = false;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| AgentError::ToolExecution {
                 tool_name: "web_fetch".into(),
                 message: format!("Failed to read response body: {}", e),
             })?;
+            buf.extend_from_slice(&chunk);
+            if buf.len() >= MAX_BODY_BYTES {
+                buf.truncate(MAX_BODY_BYTES);
+                hit_limit = true;
+                break;
+            }
+        }
 
+        let body = String::from_utf8_lossy(&buf);
         let truncated = if body.len() > args.max_length {
             format!(
-                "{}... [truncated, {} total chars]",
+                "{}... [truncated, {} total chars{}]",
                 &body[..args.max_length],
-                body.len()
+                body.len(),
+                if hit_limit {
+                    ", response exceeded 2MB limit"
+                } else {
+                    ""
+                },
             )
+        } else if hit_limit {
+            format!("{}... [truncated at 2MB limit]", body)
         } else {
-            body
+            body.into_owned()
         };
 
         Ok(format!("HTTP {}\n\n{}", status.as_u16(), truncated))
@@ -432,5 +471,26 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("private"), "got: {msg}");
+    }
+
+    // ── redirect policy unit tests ────────────────────────────────────
+
+    #[test]
+    fn test_ssrf_redirect_policy_is_custom() {
+        // Ensure the custom redirect policy can be constructed without panic.
+        let _policy = ssrf_safe_redirect_policy();
+    }
+
+    #[test]
+    fn test_redirect_target_to_private_ip_blocked() {
+        // Validate that internal URLs would be caught during redirect validation.
+        let result = validate_url_not_internal("http://127.0.0.1/secret");
+        assert!(result.is_err(), "redirect to loopback should be blocked");
+
+        let result = validate_url_not_internal("http://10.0.0.1/internal");
+        assert!(result.is_err(), "redirect to RFC1918 should be blocked");
+
+        let result = validate_url_not_internal("http://169.254.169.254/metadata");
+        assert!(result.is_err(), "redirect to link-local should be blocked");
     }
 }
