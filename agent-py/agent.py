@@ -74,7 +74,8 @@ def start_agent_shell_sidecar() -> bool:
     except Exception:
         pass
 
-    # Start the sidecar
+    # Start the sidecar in its own process group so we can kill the
+    # entire group if the parent crashes (preventing orphan zombies).
     try:
         _agent_shell_process = subprocess.Popen(
             [
@@ -85,6 +86,7 @@ def start_agent_shell_sidecar() -> bool:
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            preexec_fn=os.setsid,  # new process group
         )
         # Wait for it to be ready
         for _ in range(20):
@@ -104,16 +106,35 @@ def start_agent_shell_sidecar() -> bool:
 
 
 def stop_agent_shell_sidecar() -> None:
-    """Stop the Rust agent-shell sidecar if we started it."""
+    """Stop the Rust agent-shell sidecar if we started it.
+    Sends SIGTERM to the entire process group to prevent orphaned children.
+    """
     global _agent_shell_process
     if _agent_shell_process is not None:
-        print(f"[agent-shell] Stopping sidecar (PID {_agent_shell_process.pid})")
-        _agent_shell_process.send_signal(signal.SIGTERM)
+        pid = _agent_shell_process.pid
+        print(f"[agent-shell] Stopping sidecar process group (PID {pid})")
+        try:
+            # Kill the entire process group we created via os.setsid()
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
         try:
             _agent_shell_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
+            try:
+                pgid = os.getpgid(pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
             _agent_shell_process.kill()
         _agent_shell_process = None
+
+
+# Safety net: ensure the sidecar is always cleaned up, even on unhandled
+# exceptions, SIGINT, or interpreter shutdown.
+import atexit
+atexit.register(stop_agent_shell_sidecar)
 
 
 # Track whether agent-shell is available

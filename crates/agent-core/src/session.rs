@@ -7,6 +7,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+/// IO trait re-export for async save.
+use tokio::fs as async_fs;
+
 /// A single conversation session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -110,9 +113,27 @@ impl Session {
         Ok(())
     }
 
+    /// Persist this session to disk as JSON (async / non-blocking).
+    ///
+    /// Preferred inside async contexts; avoids blocking Tokio worker threads.
+    pub async fn save_to_async(&self, dir: &Path) -> Result<(), AgentError> {
+        async_fs::create_dir_all(dir).await?;
+        let path = dir.join(format!("{}.json", self.id));
+        let json = serde_json::to_string_pretty(self)?;
+        async_fs::write(path, json).await?;
+        Ok(())
+    }
+
     /// Load a session from a JSON file.
     pub fn load_from(path: &Path) -> Result<Self, AgentError> {
         let json = std::fs::read_to_string(path)?;
+        let session: Self = serde_json::from_str(&json)?;
+        Ok(session)
+    }
+
+    /// Load a session from a JSON file (async / non-blocking).
+    pub async fn load_from_async(path: &Path) -> Result<Self, AgentError> {
+        let json = async_fs::read_to_string(path).await?;
         let session: Self = serde_json::from_str(&json)?;
         Ok(session)
     }
@@ -274,6 +295,21 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Add a message to the active session (async / non-blocking save).
+    ///
+    /// Preferred inside async contexts (e.g. axum route handlers holding
+    /// `tokio::sync::RwLock`) to avoid blocking Tokio worker threads.
+    pub async fn push_message_async(&mut self, message: Message) -> Result<(), AgentError> {
+        let session = self
+            .active_session_mut()
+            .ok_or_else(|| AgentError::Session("No active session".into()))?;
+        session.push_message(message);
+        if self.auto_save {
+            self.save_active_async().await?;
+        }
+        Ok(())
+    }
+
     /// Get the recent message history for the active session (for the context window).
     pub fn recent_messages(&self) -> Vec<&Message> {
         self.active_session()
@@ -285,6 +321,17 @@ impl SessionManager {
     pub fn save_active(&self) -> Result<(), AgentError> {
         if let Some(session) = self.active_session() {
             session.save_to(&self.sessions_dir)?;
+        }
+        Ok(())
+    }
+
+    /// Save the active session to disk (async / non-blocking).
+    ///
+    /// Use this from async contexts (e.g. inside a tokio::sync::RwLock guard)
+    /// to avoid blocking the Tokio runtime on disk I/O.
+    pub async fn save_active_async(&self) -> Result<(), AgentError> {
+        if let Some(session) = self.active_session() {
+            session.save_to_async(&self.sessions_dir).await?;
         }
         Ok(())
     }

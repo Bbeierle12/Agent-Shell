@@ -151,20 +151,27 @@ impl SkillIndexer {
 
     /// Get the current skill index.
     pub fn get_skill_index(&self) -> SkillIndex {
-        self.index
-            .read()
-            .expect("Index lock poisoned")
-            .skill_index
-            .clone()
+        match self.index.read() {
+            Ok(guard) => guard.skill_index.clone(),
+            Err(poisoned) => {
+                // Lock was poisoned by a panicked writer. Recover by
+                // reading through the poison — data may be stale but
+                // we avoid crashing the process.
+                tracing::warn!("Index RwLock was poisoned, recovering");
+                poisoned.into_inner().skill_index.clone()
+            }
+        }
     }
 
     /// Get the current content index.
     pub fn get_content_index(&self) -> ContentIndex {
-        self.index
-            .read()
-            .expect("Index lock poisoned")
-            .content_index
-            .clone()
+        match self.index.read() {
+            Ok(guard) => guard.content_index.clone(),
+            Err(poisoned) => {
+                tracing::warn!("Index RwLock was poisoned, recovering");
+                poisoned.into_inner().content_index.clone()
+            }
+        }
     }
 
     /// Update a single skill in the index without rebuilding everything.
@@ -321,12 +328,13 @@ impl SkillIndexer {
 
     /// Get metadata for a specific skill.
     pub fn get_skill_meta(&self, name: &str) -> Option<SkillMeta> {
-        self.index
-            .read()
-            .expect("Index lock poisoned")
-            .skill_index
-            .find(name)
-            .cloned()
+        match self.index.read() {
+            Ok(guard) => guard.skill_index.find(name).cloned(),
+            Err(poisoned) => {
+                tracing::warn!("Index RwLock was poisoned, recovering");
+                poisoned.into_inner().skill_index.find(name).cloned()
+            }
+        }
     }
 
     /// Check if a skill exists on disk.

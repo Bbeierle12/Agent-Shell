@@ -9,12 +9,16 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 pub use state::AppState;
 
 /// Middleware that validates a bearer token from the Authorization header.
+///
+/// Uses constant-time comparison (`subtle::ConstantTimeEq`) to prevent
+/// timing-based side-channel attacks that could leak the token.
 async fn auth_middleware(
     State(state): axum::extract::State<AppState>,
     req: Request,
@@ -31,8 +35,15 @@ async fn auth_middleware(
         .and_then(|v| v.to_str().ok());
 
     match auth_header {
-        Some(value) if value.starts_with("Bearer ") && &value[7..] == expected => {
-            next.run(req).await
+        Some(value) if value.starts_with("Bearer ") => {
+            let provided = &value[7..];
+            // Constant-time comparison: both operands are compared in full,
+            // regardless of where they first differ.
+            if provided.as_bytes().ct_eq(expected.as_bytes()).into() {
+                next.run(req).await
+            } else {
+                (StatusCode::UNAUTHORIZED, "Invalid or missing bearer token").into_response()
+            }
         }
         _ => (StatusCode::UNAUTHORIZED, "Invalid or missing bearer token").into_response(),
     }

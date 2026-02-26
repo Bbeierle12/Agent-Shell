@@ -3,13 +3,15 @@ use agent_core::tool_registry::Tool;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use url::Url;
 
 /// Fetch a web page and return its text content.
-pub struct WebFetchTool {
-    client: reqwest::Client,
-}
+///
+/// Uses per-request DNS pinning to prevent TOCTOU / DNS-rebinding SSRF:
+/// we resolve DNS once, validate every returned IP, then force `reqwest`
+/// to connect to the already-validated addresses.
+pub struct WebFetchTool;
 
 impl Default for WebFetchTool {
     fn default() -> Self {
@@ -19,13 +21,32 @@ impl Default for WebFetchTool {
 
 impl WebFetchTool {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
+        Self
+    }
+
+    /// Build a per-request client whose DNS is pinned to the pre-validated
+    /// IP addresses, closing the TOCTOU window.
+    fn build_pinned_client(
+        domain: &str,
+        port: u16,
+        addrs: &[SocketAddr],
+    ) -> reqwest::Client {
+        let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .user_agent("agent-shell/0.1")
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .build()
-            .unwrap_or_default();
-        Self { client }
+            .redirect(reqwest::redirect::Policy::limited(5));
+
+        // Pin every validated address so reqwest never re-resolves.
+        for addr in addrs {
+            builder = builder.resolve_to_addrs(domain, &[*addr]);
+        }
+        // Also pin with port in case redirects try a different port.
+        let host_with_port = format!("{}:{}", domain, port);
+        for addr in addrs {
+            builder = builder.resolve(&host_with_port, *addr);
+        }
+
+        builder.build().unwrap_or_default()
     }
 }
 
@@ -53,8 +74,23 @@ pub(crate) fn is_private_ip(ip: &IpAddr) -> bool {
     }
 }
 
+/// Validated URL with pre-resolved addresses pinned for TOCTOU-safe fetching.
+#[derive(Debug)]
+pub(crate) struct ValidatedUrl {
+    pub url: Url,
+    /// The domain name (if the host was a domain, not a raw IP).
+    pub domain: Option<String>,
+    /// Port (defaults to 80/443 based on scheme).
+    pub port: u16,
+    /// Pre-resolved and validated socket addresses to pin in reqwest.
+    pub resolved_addrs: Vec<SocketAddr>,
+}
+
 /// Validate that a URL is safe to fetch (not an internal/SSRF target).
-pub(crate) fn validate_url_not_internal(raw_url: &str) -> Result<Url, AgentError> {
+///
+/// Returns a `ValidatedUrl` with pre-resolved addresses so the caller
+/// can pin DNS in `reqwest`, eliminating the TOCTOU / DNS-rebinding window.
+pub(crate) fn validate_url_not_internal(raw_url: &str) -> Result<ValidatedUrl, AgentError> {
     let parsed = Url::parse(raw_url).map_err(|e| AgentError::ToolExecution {
         tool_name: "web_fetch".into(),
         message: format!("Invalid URL: {}", e),
@@ -91,6 +127,8 @@ pub(crate) fn validate_url_not_internal(raw_url: &str) -> Result<Url, AgentError
         }
     }
 
+    let port = parsed.port_or_known_default().unwrap_or(80);
+
     // Resolve DNS and block private IPs.
     // Check if the host is a raw IP address first.
     if let Some(url::Host::Ipv4(ip)) = parsed.host() {
@@ -100,6 +138,12 @@ pub(crate) fn validate_url_not_internal(raw_url: &str) -> Result<Url, AgentError
                 message: format!("IP address {} is a private/internal address", ip),
             });
         }
+        return Ok(ValidatedUrl {
+            url: parsed,
+            domain: None,
+            port,
+            resolved_addrs: vec![SocketAddr::new(IpAddr::V4(ip), port)],
+        });
     }
     if let Some(url::Host::Ipv6(ip)) = parsed.host() {
         if is_private_ip(&IpAddr::V6(ip)) {
@@ -108,29 +152,62 @@ pub(crate) fn validate_url_not_internal(raw_url: &str) -> Result<Url, AgentError
                 message: format!("IP address {} is a private/internal address", ip),
             });
         }
+        return Ok(ValidatedUrl {
+            url: parsed,
+            domain: None,
+            port,
+            resolved_addrs: vec![SocketAddr::new(IpAddr::V6(ip), port)],
+        });
     }
 
-    // For domain names, perform DNS resolution and check all resolved IPs.
+    // For domain names, perform DNS resolution and check ALL resolved IPs.
+    let mut safe_addrs = Vec::new();
     if let Some(url::Host::Domain(domain)) = parsed.host() {
-        let port = parsed.port_or_known_default().unwrap_or(80);
-        let addr_str = format!("{}:{}", domain, port);
-        if let Ok(addrs) = std::net::ToSocketAddrs::to_socket_addrs(&addr_str) {
-            for addr in addrs {
-                if is_private_ip(&addr.ip()) {
-                    return Err(AgentError::ToolExecution {
-                        tool_name: "web_fetch".into(),
-                        message: format!(
-                            "Host '{}' resolves to private/internal address {}",
-                            domain,
-                            addr.ip()
-                        ),
-                    });
-                }
+        let domain_owned = domain.to_string();
+        let addr_str = format!("{}:{}", domain_owned, port);
+        let addrs: Vec<SocketAddr> =
+            std::net::ToSocketAddrs::to_socket_addrs(&addr_str)
+                .map_err(|e| AgentError::ToolExecution {
+                    tool_name: "web_fetch".into(),
+                    message: format!("DNS resolution failed for '{}': {}", domain_owned, e),
+                })?
+                .collect();
+
+        if addrs.is_empty() {
+            return Err(AgentError::ToolExecution {
+                tool_name: "web_fetch".into(),
+                message: format!("DNS returned no addresses for '{}'", domain_owned),
+            });
+        }
+
+        for addr in &addrs {
+            if is_private_ip(&addr.ip()) {
+                return Err(AgentError::ToolExecution {
+                    tool_name: "web_fetch".into(),
+                    message: format!(
+                        "Host '{}' resolves to private/internal address {}",
+                        domain_owned,
+                        addr.ip()
+                    ),
+                });
             }
         }
+        safe_addrs = addrs;
+
+        return Ok(ValidatedUrl {
+            url: parsed,
+            domain: Some(domain_owned),
+            port,
+            resolved_addrs: safe_addrs,
+        });
     }
 
-    Ok(parsed)
+    Ok(ValidatedUrl {
+        url: parsed,
+        domain: None,
+        port,
+        resolved_addrs: safe_addrs,
+    })
 }
 
 #[async_trait]
@@ -177,18 +254,29 @@ impl Tool for WebFetchTool {
             message: format!("Invalid arguments: {}", e),
         })?;
 
-        // SSRF validation — block internal URLs before making the request.
-        validate_url_not_internal(&args.url)?;
+        // SSRF validation — resolve DNS once, validate IPs, then pin them
+        // so reqwest cannot re-resolve to a different (malicious) address.
+        let validated = validate_url_not_internal(&args.url)?;
 
-        let response =
-            self.client
-                .get(&args.url)
-                .send()
-                .await
-                .map_err(|e| AgentError::ToolExecution {
-                    tool_name: "web_fetch".into(),
-                    message: format!("Request failed: {}", e),
-                })?;
+        let client = if let Some(ref domain) = validated.domain {
+            Self::build_pinned_client(domain, validated.port, &validated.resolved_addrs)
+        } else {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .user_agent("agent-shell/0.1")
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .build()
+                .unwrap_or_default()
+        };
+
+        let response = client
+            .get(validated.url.as_str())
+            .send()
+            .await
+            .map_err(|e| AgentError::ToolExecution {
+                tool_name: "web_fetch".into(),
+                message: format!("Request failed: {}", e),
+            })?;
 
         let status = response.status();
         let body = response

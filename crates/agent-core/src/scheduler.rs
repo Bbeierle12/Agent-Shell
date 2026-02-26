@@ -175,8 +175,13 @@ impl Scheduler {
     }
 
     /// Check all schedules and fire any that are due.
+    ///
+    /// Uses a tolerance window so that if the async runtime wakes up a
+    /// few seconds after the exact cron second, the schedule still fires.
     pub fn tick(&mut self) -> Vec<ScheduledTask> {
         let now = Utc::now();
+        // Allow up to 5 seconds of slack for runtime jitter.
+        let tolerance = chrono::Duration::seconds(5);
         let mut tasks = Vec::new();
 
         for (i, config) in self.schedules.iter().enumerate() {
@@ -194,7 +199,7 @@ impl Scheduler {
                 None => continue,
             };
 
-            if now >= state.next_run {
+            if now >= state.next_run || (state.next_run - now) <= tolerance {
                 debug!("Firing schedule: {}", config.name);
 
                 let workspace = config
@@ -277,6 +282,11 @@ impl Scheduler {
 /// The `cron` crate expects 7 fields: `sec min hour dom month dow year`.
 /// Standard cron uses 5 fields: `min hour dom month dow`.
 /// This function prepends `sec=0` and appends `year=*` as needed.
+///
+/// **Note:** For 5-field expressions this pins execution to the 0th second
+/// of the minute. The `tick()` method uses `TICK_TOLERANCE` to allow a
+/// few seconds of slack so the trigger isn't missed if the async runtime
+/// wakes up slightly late.
 pub fn parse_cron_expr(expr: &str) -> Result<Schedule, AgentError> {
     let normalized = normalize_cron_fields(expr);
     Schedule::from_str(&normalized)

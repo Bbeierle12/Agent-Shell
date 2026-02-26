@@ -3,7 +3,11 @@
 //! Provides a `Plugin` trait with lifecycle hooks and a `PluginRegistry`
 //! for registering, querying, and controlling plugins at runtime.
 //! Ported from netsec-core with agent-specific categories.
+//!
+//! For plugins that require async initialization (database connections,
+//! HTTP binds, etc.), implement `AsyncPlugin` instead of `Plugin`.
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -50,7 +54,7 @@ pub struct PluginInfo {
 ///
 /// Provides lifecycle hooks (start/stop), health checks, and metadata.
 /// Methods are synchronous to keep the trait dyn-compatible; plugins that
-/// need async initialization should handle that internally.
+/// need async initialization should implement `AsyncPlugin` instead.
 pub trait Plugin: Send + Sync {
     /// Return metadata about this plugin.
     fn info(&self) -> PluginInfo;
@@ -63,6 +67,25 @@ pub trait Plugin: Send + Sync {
 
     /// Stop the plugin (release resources, shut down background work, etc.).
     fn stop(&mut self) -> Result<(), String>;
+}
+
+/// Async variant of the `Plugin` trait.
+///
+/// Use this for plugins that need to perform async I/O during start/stop
+/// (e.g. opening database connections, binding to ports, making HTTP calls).
+#[async_trait]
+pub trait AsyncPlugin: Send + Sync {
+    /// Return metadata about this plugin.
+    fn info(&self) -> PluginInfo;
+
+    /// Perform a health check. Returns the current operational status.
+    fn health_check(&self) -> PluginStatus;
+
+    /// Start the plugin asynchronously.
+    async fn start(&mut self) -> Result<(), String>;
+
+    /// Stop the plugin asynchronously.
+    async fn stop(&mut self) -> Result<(), String>;
 }
 
 // ── Plugin Key ─────────────────────────────────────────────────────────
@@ -94,6 +117,7 @@ impl fmt::Display for PluginKey {
 /// Central registry for all plugins.
 pub struct PluginRegistry {
     plugins: HashMap<PluginKey, Box<dyn Plugin>>,
+    async_plugins: HashMap<PluginKey, Box<dyn AsyncPlugin>>,
 }
 
 impl PluginRegistry {
@@ -101,6 +125,7 @@ impl PluginRegistry {
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
+            async_plugins: HashMap::new(),
         }
     }
 
@@ -108,7 +133,7 @@ impl PluginRegistry {
     pub fn register(&mut self, plugin: Box<dyn Plugin>) -> Result<(), String> {
         let info = plugin.info();
         let key = PluginKey::new(info.category.clone(), &info.name);
-        if self.plugins.contains_key(&key) {
+        if self.plugins.contains_key(&key) || self.async_plugins.contains_key(&key) {
             return Err(format!("plugin already registered: {key}"));
         }
         tracing::info!("Registered plugin: {key}");
@@ -116,24 +141,43 @@ impl PluginRegistry {
         Ok(())
     }
 
+    /// Register an async plugin. Returns an error if a plugin with the same key already exists.
+    pub fn register_async(&mut self, plugin: Box<dyn AsyncPlugin>) -> Result<(), String> {
+        let info = plugin.info();
+        let key = PluginKey::new(info.category.clone(), &info.name);
+        if self.plugins.contains_key(&key) || self.async_plugins.contains_key(&key) {
+            return Err(format!("plugin already registered: {key}"));
+        }
+        tracing::info!("Registered async plugin: {key}");
+        self.async_plugins.insert(key, plugin);
+        Ok(())
+    }
+
     /// Unregister a plugin by key. Returns an error if not found.
     pub fn unregister(&mut self, key: &PluginKey) -> Result<(), String> {
-        self.plugins
-            .remove(key)
-            .map(|_| {
-                tracing::info!("Unregistered plugin: {key}");
-            })
-            .ok_or_else(|| format!("plugin not found: {key}"))
+        if self.plugins.remove(key).is_some() || self.async_plugins.remove(key).is_some() {
+            tracing::info!("Unregistered plugin: {key}");
+            Ok(())
+        } else {
+            Err(format!("plugin not found: {key}"))
+        }
     }
 
     /// Get info for a specific plugin.
     pub fn get_info(&self, key: &PluginKey) -> Option<PluginInfo> {
-        self.plugins.get(key).map(|p| p.info())
+        self.plugins
+            .get(key)
+            .map(|p| p.info())
+            .or_else(|| self.async_plugins.get(key).map(|p| p.info()))
     }
 
     /// List info for all registered plugins.
     pub fn list(&self) -> Vec<PluginInfo> {
-        self.plugins.values().map(|p| p.info()).collect()
+        self.plugins
+            .values()
+            .map(|p| p.info())
+            .chain(self.async_plugins.values().map(|p| p.info()))
+            .collect()
     }
 
     /// List info for all plugins in a given category.
@@ -142,6 +186,12 @@ impl PluginRegistry {
             .iter()
             .filter(|(k, _)| &k.category == category)
             .map(|(_, p)| p.info())
+            .chain(
+                self.async_plugins
+                    .iter()
+                    .filter(|(k, _)| &k.category == category)
+                    .map(|(_, p)| p.info()),
+            )
             .collect()
     }
 
@@ -150,6 +200,11 @@ impl PluginRegistry {
         self.plugins
             .iter()
             .map(|(key, plugin)| (key.clone(), plugin.health_check()))
+            .chain(
+                self.async_plugins
+                    .iter()
+                    .map(|(key, plugin)| (key.clone(), plugin.health_check())),
+            )
             .collect()
     }
 
@@ -169,6 +224,37 @@ impl PluginRegistry {
         results
     }
 
+    /// Start all plugins (sync + async). Async plugins are started with `.await`.
+    pub async fn start_all_async(&mut self) -> Vec<(PluginKey, Result<(), String>)> {
+        let mut results = Vec::new();
+
+        // Sync plugins
+        let sync_keys: Vec<PluginKey> = self.plugins.keys().cloned().collect();
+        for key in sync_keys {
+            if let Some(plugin) = self.plugins.get_mut(&key) {
+                let result = plugin.start();
+                if let Err(ref e) = result {
+                    tracing::warn!("Plugin {key} failed to start: {e}");
+                }
+                results.push((key, result));
+            }
+        }
+
+        // Async plugins
+        let async_keys: Vec<PluginKey> = self.async_plugins.keys().cloned().collect();
+        for key in async_keys {
+            if let Some(plugin) = self.async_plugins.get_mut(&key) {
+                let result = plugin.start().await;
+                if let Err(ref e) = result {
+                    tracing::warn!("Async plugin {key} failed to start: {e}");
+                }
+                results.push((key, result));
+            }
+        }
+
+        results
+    }
+
     /// Stop all plugins. Returns errors for any that fail (does not stop on first error).
     pub fn stop_all(&mut self) -> Vec<(PluginKey, Result<(), String>)> {
         let keys: Vec<PluginKey> = self.plugins.keys().cloned().collect();
@@ -185,9 +271,38 @@ impl PluginRegistry {
         results
     }
 
-    /// Return the total number of registered plugins.
+    /// Stop all plugins (sync + async). Async plugins are stopped with `.await`.
+    pub async fn stop_all_async(&mut self) -> Vec<(PluginKey, Result<(), String>)> {
+        let mut results = Vec::new();
+
+        let sync_keys: Vec<PluginKey> = self.plugins.keys().cloned().collect();
+        for key in sync_keys {
+            if let Some(plugin) = self.plugins.get_mut(&key) {
+                let result = plugin.stop();
+                if let Err(ref e) = result {
+                    tracing::warn!("Plugin {key} failed to stop: {e}");
+                }
+                results.push((key, result));
+            }
+        }
+
+        let async_keys: Vec<PluginKey> = self.async_plugins.keys().cloned().collect();
+        for key in async_keys {
+            if let Some(plugin) = self.async_plugins.get_mut(&key) {
+                let result = plugin.stop().await;
+                if let Err(ref e) = result {
+                    tracing::warn!("Async plugin {key} failed to stop: {e}");
+                }
+                results.push((key, result));
+            }
+        }
+
+        results
+    }
+
+    /// Return the total number of registered plugins (sync + async).
     pub fn count(&self) -> usize {
-        self.plugins.len()
+        self.plugins.len() + self.async_plugins.len()
     }
 }
 

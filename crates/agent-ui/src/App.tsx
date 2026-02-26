@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import { v4 as uuid } from 'uuid'
 import { Canvas } from './components/Canvas'
 import { Card } from './components/Card'
@@ -10,9 +10,7 @@ import { ConfirmationModal } from './components/ConfirmationModal'
 import { CardData, CardType, CardSnapshot, ViewportState, AppSettings, ApiConfig } from './types'
 import { DEFAULT_CARD_SIZES, GRID_SIZE } from './constants'
 import { healthCheck, getConfig, createSession, getAuthToken } from './services/api'
-
-// ── Persistence keys ────────────────────────────────────────────────────
-const CANVAS_KEY = 'agent_canvas_state'
+import { loadCanvasState, saveCanvasState } from './services/storage'
 
 interface CanvasState { cards: CardData[]; viewport: ViewportState; settings: AppSettings }
 
@@ -25,6 +23,9 @@ function createSnapshot(card: CardData): CardSnapshot {
 }
 
 function snapToGrid(v: number): number { return Math.round(v / GRID_SIZE) * GRID_SIZE }
+
+// ── Memoized Card to avoid re-rendering all cards on viewport/sibling changes ─
+const MemoizedCard = memo(Card)
 
 // ── App ──────────────────────────────────────────────────────────────────
 export default function App() {
@@ -39,17 +40,15 @@ export default function App() {
   const [confirmModal, setConfirmModal] = useState<{ open: boolean; title: string; message: string; onConfirm: () => void }>({ open: false, title: '', message: '', onConfirm: () => {} })
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // ── Load state from localStorage ──────────────────────────────────────
+  // ── Load state from IndexedDB (with localStorage migration) ────────
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(CANVAS_KEY)
-      if (raw) {
-        const state = JSON.parse(raw) as CanvasState
+    loadCanvasState<CanvasState>().then(state => {
+      if (state) {
         setCards(state.cards ?? [])
         setViewport(state.viewport ?? { x: 0, y: 0, scale: 1 })
         setSettings({ ...DEFAULT_SETTINGS, ...(state.settings ?? {}) })
       }
-    } catch { /* ignore */ }
+    })
   }, [])
 
   // ── Apply theme to document root ─────────────────────────────────────
@@ -62,14 +61,25 @@ export default function App() {
     }
   }, [settings.theme])
 
-  // ── Persist state with debounce ───────────────────────────────────────
+  // ── Persist state with debounce (IndexedDB, no 5 MB quota limit) ───
   useEffect(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => {
-      localStorage.setItem(CANVAS_KEY, JSON.stringify({ cards, viewport, settings }))
+      saveCanvasState({ cards, viewport, settings })
     }, 800)
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current) }
-  }, [cards, viewport, settings])
+  }, [cards, settings])
+
+  // Persist viewport separately with a longer debounce so panning/zooming
+  // doesn't trigger card re-renders or excessive IndexedDB writes.
+  const vpSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (vpSaveTimer.current) clearTimeout(vpSaveTimer.current)
+    vpSaveTimer.current = setTimeout(() => {
+      saveCanvasState({ cards, viewport, settings })
+    }, 2000)
+    return () => { if (vpSaveTimer.current) clearTimeout(vpSaveTimer.current) }
+  }, [viewport])
 
   // ── Health check + config load ────────────────────────────────────────
   useEffect(() => {
@@ -238,7 +248,7 @@ export default function App() {
       <Canvas viewport={viewport} onViewport={setViewport} showGrid={settings.showGrid}>
         <ConnectionLines cards={visibleCards} />
         {visibleCards.map(card => (
-          <Card
+          <MemoizedCard
             key={card.id}
             data={card}
             isSelected={selectedIds.has(card.id)}

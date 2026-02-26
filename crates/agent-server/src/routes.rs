@@ -76,10 +76,11 @@ async fn chat_completions(
 
     let message = Message::user(&user_msg.content);
 
-    // Add message to session.
+    // Add message to session (non-blocking async save).
     {
         let mut sm = state.session_manager.write().await;
-        sm.push_message(message)
+        sm.push_message_async(message)
+            .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
@@ -100,7 +101,7 @@ async fn chat_completions(
             match result {
                 Ok(msg) => {
                     let mut sm = session_manager.write().await;
-                    let _ = sm.push_message(msg);
+                    let _ = sm.push_message_async(msg).await;
                 }
                 Err(e) => {
                     let _ = tx.send(AgentEvent::Error(e.to_string()));
@@ -145,10 +146,10 @@ async fn chat_completions(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        // Save assistant message.
+        // Save assistant message (non-blocking).
         {
             let mut sm = state.session_manager.write().await;
-            let _ = sm.push_message(result.clone());
+            let _ = sm.push_message_async(result.clone()).await;
         }
 
         let response = ChatResponse {
