@@ -4,13 +4,16 @@ agent-framework-ollama==1.0.0b260107
 opentelemetry-semantic-conventions-ai==0.4.13
 
 # HTTP server
-fastapi
-uvicorn
+fastapi>=0.115.0
+uvicorn>=0.34.0
 
 # Debugging & dev tools
-debugpy
+debugpy>=1.8.11
 agent-dev-cli
 
 # Utilities
-python-dotenv
-httpx
+python-dotenv>=1.0.1
+httpx>=0.28.1
+
+# Transitive dependency security floor — CVE-2025-66418, CVE-2025-66471, CVE-2026-21441
+urllib3>=2.3.0

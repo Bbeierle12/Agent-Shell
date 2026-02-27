@@ -58,7 +58,7 @@ export function getSessionMessages(id: string): Promise<ApiMessage[]> {
 }
 
 // ── Chat (SSE streaming) ───────────────────────────────────────────────
-export type StreamEvent =
+type StreamEvent =
   | { type: 'token'; content: string }
   | { type: 'tool_start'; name: string }
   | { type: 'tool_result'; content: string; isError: boolean }

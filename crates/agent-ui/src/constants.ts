@@ -1,6 +1,5 @@
 import { CardType } from './types'
 
-export const INITIAL_SCALE = 1
 export const MIN_SCALE = 0.15
 export const MAX_SCALE = 3
 export const GRID_SIZE = 50

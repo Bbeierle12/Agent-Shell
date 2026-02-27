@@ -1,14 +1,16 @@
-import React, { useRef, useCallback } from 'react'
+import React, { useRef, useCallback, Suspense, lazy } from 'react'
 import { CardData, CardType, LocalChatMessage } from '../types'
 import { CARD_COLORS } from '../constants'
-import { ChatCard } from './cards/ChatCard'
-import { SessionCard } from './cards/SessionCard'
 import { NoteCard } from './cards/NoteCard'
-import { AnalyticsCard } from './cards/AnalyticsCard'
-import { TerminalCard } from './cards/TerminalCard'
+import { SessionCard } from './cards/SessionCard'
 import { SkillsCard } from './cards/SkillsCard'
 import { ContextCard } from './cards/ContextCard'
 import { PluginsCard } from './cards/PluginsCard'
+
+// Lazy-load heavy components (xterm ~500 kB, react-markdown ~200 kB)
+const ChatCard = lazy(() => import('./cards/ChatCard').then(m => ({ default: m.ChatCard })))
+const TerminalCard = lazy(() => import('./cards/TerminalCard').then(m => ({ default: m.TerminalCard })))
+const AnalyticsCard = lazy(() => import('./cards/AnalyticsCard').then(m => ({ default: m.AnalyticsCard })))
 
 interface Props {
   data: CardData
@@ -22,10 +24,12 @@ interface Props {
 }
 
 export function Card({ data, isSelected, isSelectionMode, onUpdate, onDelete, onSelect, onBringToFront, navigateHistory }: Props) {
+  const cardRef = useRef<HTMLDivElement>(null)
   const dragStart = useRef<{ mx: number; my: number; cx: number; cy: number } | null>(null)
   const resizeStart = useRef<{ mx: number; my: number; cw: number; ch: number } | null>(null)
   const hasMoved = useRef(false)
 
+  // ── Drag: DOM-only during mousemove, flush to React on mouseup ──────
   const onHeaderMouseDown = useCallback((e: React.MouseEvent) => {
     if (isSelectionMode) return
     if ((e.target as HTMLElement).tagName === 'BUTTON' || (e.target as HTMLElement).tagName === 'INPUT') return
@@ -39,10 +43,20 @@ export function Card({ data, isSelected, isSelectionMode, onUpdate, onDelete, on
       const dx = ev.clientX - dragStart.current.mx
       const dy = ev.clientY - dragStart.current.my
       hasMoved.current = true
-      onUpdate(data.id, { x: dragStart.current.cx + dx, y: dragStart.current.cy + dy })
+      // Direct DOM update — no React re-render per frame
+      const el = cardRef.current
+      if (el) {
+        el.style.left = `${dragStart.current.cx + dx}px`
+        el.style.top = `${dragStart.current.cy + dy}px`
+      }
     }
-    const onUp = () => {
-      if (dragStart.current && hasMoved.current) onUpdate(data.id, {}, true)
+    const onUp = (ev: MouseEvent) => {
+      if (dragStart.current && hasMoved.current) {
+        const dx = ev.clientX - dragStart.current.mx
+        const dy = ev.clientY - dragStart.current.my
+        // Single flush: position + history checkpoint
+        onUpdate(data.id, { x: dragStart.current.cx + dx, y: dragStart.current.cy + dy }, true)
+      }
       dragStart.current = null
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
@@ -51,6 +65,7 @@ export function Card({ data, isSelected, isSelectionMode, onUpdate, onDelete, on
     window.addEventListener('mouseup', onUp)
   }, [data, isSelectionMode, onUpdate, onBringToFront])
 
+  // ── Resize: DOM-only during mousemove, flush to React on mouseup ────
   const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
     e.stopPropagation()
     e.preventDefault()
@@ -60,10 +75,19 @@ export function Card({ data, isSelected, isSelectionMode, onUpdate, onDelete, on
       if (!resizeStart.current) return
       const newW = Math.max(240, resizeStart.current.cw + ev.clientX - resizeStart.current.mx)
       const newH = Math.max(160, resizeStart.current.ch + ev.clientY - resizeStart.current.my)
-      onUpdate(data.id, { width: newW, height: newH })
+      // Direct DOM update — no React re-render per frame
+      const el = cardRef.current
+      if (el) {
+        el.style.width = `${newW}px`
+        el.style.height = `${newH}px`
+      }
     }
-    const onUp = () => {
-      if (resizeStart.current) onUpdate(data.id, {}, true)
+    const onUp = (ev: MouseEvent) => {
+      if (resizeStart.current) {
+        const newW = Math.max(240, resizeStart.current.cw + ev.clientX - resizeStart.current.mx)
+        const newH = Math.max(160, resizeStart.current.ch + ev.clientY - resizeStart.current.my)
+        onUpdate(data.id, { width: newW, height: newH }, true)
+      }
       resizeStart.current = null
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
@@ -81,6 +105,7 @@ export function Card({ data, isSelected, isSelectionMode, onUpdate, onDelete, on
   if (data.type === CardType.ISLAND) {
     return (
       <div
+        ref={cardRef}
         className="island-card"
         style={{ left: data.x, top: data.y, width: data.width, height: data.height, zIndex: data.zIndex }}
         onMouseDown={onHeaderMouseDown}
@@ -95,6 +120,7 @@ export function Card({ data, isSelected, isSelectionMode, onUpdate, onDelete, on
 
   return (
     <div
+      ref={cardRef}
       className={`card${isSelected ? ' selected' : ''}`}
       style={{ left: data.x, top: data.y, width: data.width, height: data.height, zIndex: data.zIndex }}
       onClick={onCardClick}
@@ -117,25 +143,27 @@ export function Card({ data, isSelected, isSelectionMode, onUpdate, onDelete, on
 
       {/* Body */}
       <div className="card-body">
-        {data.type === CardType.CHAT && (
-          <ChatCard
-            history={data.chatHistory ?? []}
-            sessionId={data.sessionId}
-            onHistoryUpdate={h => onUpdate(data.id, { chatHistory: h as LocalChatMessage[] }, true)}
-          />
-        )}
-        {data.type === CardType.SESSION && <SessionCard />}
-        {data.type === CardType.NOTE && (
-          <NoteCard
-            content={data.content ?? ''}
-            onChange={text => onUpdate(data.id, { content: text })}
-          />
-        )}
-        {data.type === CardType.ANALYTICS && <AnalyticsCard />}
-        {data.type === CardType.TERMINAL && <TerminalCard />}
-        {data.type === CardType.SKILLS && <SkillsCard />}
-        {data.type === CardType.CONTEXT && <ContextCard />}
-        {data.type === CardType.PLUGINS && <PluginsCard />}
+        <Suspense fallback={<div className="card-inner" style={{ color: 'var(--text-muted)' }}>Loading…</div>}>
+          {data.type === CardType.CHAT && (
+            <ChatCard
+              history={data.chatHistory ?? []}
+              sessionId={data.sessionId}
+              onHistoryUpdate={h => onUpdate(data.id, { chatHistory: h as LocalChatMessage[] }, true)}
+            />
+          )}
+          {data.type === CardType.SESSION && <SessionCard />}
+          {data.type === CardType.NOTE && (
+            <NoteCard
+              content={data.content ?? ''}
+              onChange={text => onUpdate(data.id, { content: text })}
+            />
+          )}
+          {data.type === CardType.ANALYTICS && <AnalyticsCard />}
+          {data.type === CardType.TERMINAL && <TerminalCard />}
+          {data.type === CardType.SKILLS && <SkillsCard />}
+          {data.type === CardType.CONTEXT && <ContextCard />}
+          {data.type === CardType.PLUGINS && <PluginsCard />}
+        </Suspense>
       </div>
 
       {/* Resize handle */}
