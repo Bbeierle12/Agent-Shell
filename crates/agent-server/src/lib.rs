@@ -1,3 +1,5 @@
+pub mod ipc;
+pub mod ipc_handlers;
 pub mod routes;
 pub mod state;
 
@@ -64,7 +66,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::plugin_routes())
         .merge(routes::skill_routes())
         .merge(routes::context_routes())
-        .merge(routes::analytics_routes());
+        .merge(routes::analytics_routes())
+        .merge(routes::terminal_session_routes());
 
     // Terminal routes expose a remote shell — only enable when auth is configured.
     if config.server.auth_token.is_some() {
@@ -124,7 +127,15 @@ pub fn build_router(state: AppState) -> Router {
     app
 }
 
-/// Start the HTTP server.
+/// Start the HTTP server and IPC daemon.
+///
+/// Spawns two concurrent servers sharing the same [`AppState`]:
+///
+/// 1. **HTTP/WS** -- Axum-based REST + WebSocket server.
+/// 2. **IPC** -- Unix socket (or TCP on Windows) daemon for shell hook messages.
+///
+/// Also spawns a background task that drains capture events from the
+/// [`HookBackend`] and feeds them into the [`TerminalSessionManager`].
 pub async fn serve(
     config: AppConfig,
     tool_registry: Arc<ToolRegistry>,
@@ -137,8 +148,36 @@ pub async fn serve(
         plugin_registry,
         skill_indexer,
     )?;
-    let router = build_router(state);
 
+    // Drain capture events from HookBackend → TerminalSessionManager.
+    let hook_backend = state.hook_backend.clone();
+    let terminal_sessions = state.terminal_sessions.clone();
+    let mut hook_rx = {
+        let mut backend = hook_backend.lock().await;
+        backend
+            .take_receiver()
+            .ok_or_else(|| anyhow::anyhow!("Hook backend receiver already taken"))?
+    };
+    tokio::spawn(async move {
+        while let Some(event) = hook_rx.recv().await {
+            let mut tsm = terminal_sessions.write().await;
+            tsm.process_event(&event);
+        }
+        tracing::debug!("Hook event processor stopped");
+    });
+
+    // Spawn IPC server.
+    let ipc_state = state.clone();
+    let socket_path = ipc::default_socket_path();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let ipc_handle = tokio::spawn(async move {
+        if let Err(e) = ipc::run_ipc_server(socket_path, ipc_state, shutdown_rx).await {
+            tracing::error!("IPC server error: {}", e);
+        }
+    });
+
+    // Build and start HTTP server.
+    let router = build_router(state);
     let addr = format!("{}:{}", config.server.host, config.server.port);
     tracing::info!("Starting server on {}", addr);
 
@@ -147,8 +186,13 @@ pub async fn serve(
     }
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, router).await?;
+    let http_result = axum::serve(listener, router).await;
 
+    // When HTTP server stops, signal IPC to shut down too.
+    let _ = shutdown_tx.send(true);
+    let _ = ipc_handle.await;
+
+    http_result?;
     Ok(())
 }
 

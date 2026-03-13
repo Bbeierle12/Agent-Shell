@@ -86,6 +86,15 @@ pub struct GitContext {
     pub head_short: Option<String>,
     /// Repository root path.
     pub repo_root: PathBuf,
+    /// Number of files staged in the index (0 when unknown).
+    #[serde(default)]
+    pub staged: usize,
+    /// Number of files modified in the working tree (0 when unknown).
+    #[serde(default)]
+    pub modified: usize,
+    /// Number of untracked files (0 when unknown).
+    #[serde(default)]
+    pub untracked: usize,
 }
 
 /// Project detection markers — (filename_or_extension, ProjectType).
@@ -276,7 +285,54 @@ impl ContextLinker {
             is_dirty,
             head_short,
             repo_root,
+            staged: 0,
+            modified: 0,
+            untracked: 0,
         })
+    }
+
+    /// Get enriched git context using `git2` via [`GitTracker`].
+    ///
+    /// Falls back to the CLI-based [`get_git_context`] when git2 fails to
+    /// open the repository, but enriches the result with staged / modified /
+    /// untracked counts when git2 succeeds.
+    pub fn get_git_context_rich(dir: &Path) -> Option<GitContext> {
+        use crate::git_tracker::GitTracker;
+
+        let tracker = GitTracker::new();
+        match tracker.status(dir) {
+            Ok(repo_status) => {
+                // Build context from git2 data.
+                let repo = git2::Repository::discover(dir).ok()?;
+                let repo_root = repo
+                    .workdir()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| dir.to_path_buf());
+
+                let head_short = repo
+                    .head()
+                    .ok()
+                    .and_then(|h| h.target())
+                    .map(|oid| oid.to_string().chars().take(7).collect());
+
+                let is_dirty = !repo_status.is_clean();
+
+                Some(GitContext {
+                    branch: repo_status.branch,
+                    remote: repo_status.remote,
+                    is_dirty,
+                    head_short,
+                    repo_root,
+                    staged: repo_status.staged,
+                    modified: repo_status.modified,
+                    untracked: repo_status.untracked,
+                })
+            }
+            Err(_) => {
+                // Fall back to CLI-based detection.
+                Self::get_git_context(dir)
+            }
+        }
     }
 
     /// Get a cached project by path.

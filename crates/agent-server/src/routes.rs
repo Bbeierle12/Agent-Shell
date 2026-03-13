@@ -485,6 +485,117 @@ async fn get_skill(
     Ok(Json(content))
 }
 
+// ── Terminal Sessions (IPC-fed) ────────────────────────────────────────
+
+pub fn terminal_session_routes() -> Router<AppState> {
+    Router::new()
+        .route("/v1/terminal-sessions", get(list_terminal_sessions))
+        .route("/v1/terminal-sessions/{id}", get(get_terminal_session))
+}
+
+#[derive(Debug, Serialize)]
+struct TerminalSessionInfo {
+    id: String,
+    shell: String,
+    working_directory: String,
+    started_at: String,
+    ended_at: Option<String>,
+    terminal: Option<String>,
+    tags: Vec<String>,
+    active: bool,
+    command_count: usize,
+}
+
+async fn list_terminal_sessions(State(state): State<AppState>) -> impl IntoResponse {
+    let tsm = state.terminal_sessions.read().await;
+    let sessions: Vec<TerminalSessionInfo> = tsm
+        .all_sessions()
+        .into_iter()
+        .map(|s| {
+            let cmd_count = tsm.get_commands(&s.id).map(|c| c.len()).unwrap_or(0);
+            TerminalSessionInfo {
+                id: s.id.to_string(),
+                shell: s.shell.clone(),
+                working_directory: s.working_directory.display().to_string(),
+                started_at: s.started_at.to_rfc3339(),
+                ended_at: s.ended_at.map(|t| t.to_rfc3339()),
+                terminal: s.terminal.clone(),
+                tags: s.tags.clone(),
+                active: s.is_active(),
+                command_count: cmd_count,
+            }
+        })
+        .collect();
+    Json(sessions)
+}
+
+#[derive(Debug, Serialize)]
+struct TerminalSessionDetail {
+    session: TerminalSessionInfo,
+    commands: Vec<TerminalCommandInfo>,
+}
+
+#[derive(Debug, Serialize)]
+struct TerminalCommandInfo {
+    id: String,
+    sequence: u32,
+    command_text: String,
+    working_directory: String,
+    started_at: String,
+    ended_at: Option<String>,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+}
+
+async fn get_terminal_session(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    validate_session_id(&id)?;
+
+    let uuid = uuid::Uuid::parse_str(&id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid UUID format".to_string()))?;
+
+    let tsm = state.terminal_sessions.read().await;
+    let session = tsm
+        .get_session(&uuid)
+        .ok_or((StatusCode::NOT_FOUND, "Terminal session not found".to_string()))?;
+
+    let cmd_count = tsm.get_commands(&uuid).map(|c| c.len()).unwrap_or(0);
+    let info = TerminalSessionInfo {
+        id: session.id.to_string(),
+        shell: session.shell.clone(),
+        working_directory: session.working_directory.display().to_string(),
+        started_at: session.started_at.to_rfc3339(),
+        ended_at: session.ended_at.map(|t| t.to_rfc3339()),
+        terminal: session.terminal.clone(),
+        tags: session.tags.clone(),
+        active: session.is_active(),
+        command_count: cmd_count,
+    };
+
+    let commands: Vec<TerminalCommandInfo> = tsm
+        .get_commands(&uuid)
+        .unwrap_or(&[])
+        .iter()
+        .map(|c| TerminalCommandInfo {
+            id: c.id.to_string(),
+            sequence: c.sequence,
+            command_text: c.command_text.clone(),
+            working_directory: c.working_directory.display().to_string(),
+            started_at: c.started_at.to_rfc3339(),
+            ended_at: c.ended_at.map(|t| t.to_rfc3339()),
+            exit_code: c.exit_code,
+            duration_ms: c.duration_ms,
+        })
+        .collect();
+
+    Ok(Json(TerminalSessionDetail {
+        session: info,
+        commands,
+    }))
+}
+
 // ── Terminal ───────────────────────────────────────────────────────────
 
 pub fn terminal_routes() -> Router<AppState> {

@@ -24,6 +24,9 @@ dirs = { workspace = true }
 reqwest = { workspace = true }
 async-openai = { workspace = true }
 regex = { workspace = true }
+base64 = { workspace = true }
+git2 = { workspace = true }
+agent-pty = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -27,6 +27,8 @@ pub enum AgentEventType {
     ScheduleFired,
     ProfileChanged,
     SecretDetected,
+    GitCommit,
+    GitBranchSwitch,
     Error,
 }
 

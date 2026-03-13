@@ -66,16 +66,28 @@ walkdir = "2"
 # Regex
 regex = "1"
 
+# Encoding
+base64 = "0.22"
+
+# Git
+git2 = "0.19"
+
+# Full-text search
+tantivy = "0.22"
+
 # Misc
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
+crc32fast = "1"
 
 # Workspace crates
 agent-analytics = { path = "crates/agent-analytics" }
 agent-core = { path = "crates/agent-core" }
+agent-db = { path = "crates/agent-db" }
 agent-plugins = { path = "crates/agent-plugins" }
 agent-pty = { path = "crates/agent-pty" }
+agent-search = { path = "crates/agent-search" }
 agent-skills = { path = "crates/agent-skills" }
 agent-tools = { path = "crates/agent-tools" }
 agent-server = { path = "crates/agent-server" }
