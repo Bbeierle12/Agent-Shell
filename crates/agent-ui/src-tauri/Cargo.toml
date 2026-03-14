@@ -1,0 +1,24 @@
+[package]
+name = "agent-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+agent-core = { path = "../../../crates/agent-core" }
+agent-server = { path = "../../../crates/agent-server" }
+agent-plugins = { path = "../../../crates/agent-plugins" }
+agent-skills = { path = "../../../crates/agent-skills" }
+agent-tools = { path = "../../../crates/agent-tools" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lib]
+name = "agent_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]

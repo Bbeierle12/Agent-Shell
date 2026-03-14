@@ -101,7 +101,7 @@ impl ProviderChain {
                 model: config.provider.model.clone(),
                 api_key: config.provider.api_key.clone(),
                 priority: 1,
-                timeout_secs: 120,
+                timeout_secs: 300,
                 max_retries: 2,
                 roles: Vec::new(),
                 max_tokens: config.provider.max_tokens,

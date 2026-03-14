@@ -252,14 +252,14 @@ mod tests {
         hook_backend.start();
 
         AppState {
-            config: config.clone(),
+            config: Arc::new(RwLock::new(config.clone())),
             tool_registry: registry.clone(),
             session_manager: Arc::new(RwLock::new(
                 agent_core::session::SessionManager::new(&config).unwrap(),
             )),
-            agent_loop: Arc::new(
+            agent_loop: Arc::new(RwLock::new(
                 agent_core::agent_loop::AgentLoop::new(config, registry).unwrap(),
-            ),
+            )),
             plugin_registry,
             skill_indexer,
             hook_backend: Arc::new(Mutex::new(hook_backend)),

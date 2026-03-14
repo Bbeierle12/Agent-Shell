@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "crates/agent-ui/src-tauri"]
 exclude = ["crates/agent-ui"]
 resolver = "2"
 

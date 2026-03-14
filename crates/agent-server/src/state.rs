@@ -13,10 +13,10 @@ use tokio::sync::{Mutex, RwLock};
 /// Shared application state for the server.
 #[derive(Clone)]
 pub struct AppState {
-    pub config: AppConfig,
+    pub config: Arc<RwLock<AppConfig>>,
     pub tool_registry: Arc<ToolRegistry>,
     pub session_manager: Arc<RwLock<SessionManager>>,
-    pub agent_loop: Arc<AgentLoop>,
+    pub agent_loop: Arc<RwLock<AgentLoop>>,
     pub plugin_registry: Arc<RwLock<PluginRegistry>>,
     pub skill_indexer: Arc<SkillIndexer>,
     /// Hook backend for processing shell hook IPC messages.
@@ -41,10 +41,10 @@ impl AppState {
         hook_backend.start();
 
         Ok(Self {
-            config,
+            config: Arc::new(RwLock::new(config)),
             tool_registry,
             session_manager: Arc::new(RwLock::new(session_manager)),
-            agent_loop: Arc::new(agent_loop),
+            agent_loop: Arc::new(RwLock::new(agent_loop)),
             plugin_registry,
             skill_indexer,
             hook_backend: Arc::new(Mutex::new(hook_backend)),

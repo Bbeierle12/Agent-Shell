@@ -285,6 +285,7 @@ export default function App() {
           onUpdate={updates => setSettings(s => ({ ...s, ...updates }))}
           onClose={() => setSettingsOpen(false)}
           onResetCanvas={() => setCards([])}
+          onConfigChange={setServerConfig}
         />
       )}
 

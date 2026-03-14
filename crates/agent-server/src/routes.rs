@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::Datelike;
+use axum::routing::put;
 use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
@@ -126,9 +127,10 @@ async fn chat_completions(
         // SSE streaming response.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
-        let agent_loop = state.agent_loop.clone();
+        let agent_loop_lock = state.agent_loop.clone();
         let session_manager = state.session_manager.clone();
         tokio::spawn(async move {
+            let agent_loop = agent_loop_lock.read().await;
             let result = agent_loop.run(&messages, None, &[], tx.clone()).await;
             match result {
                 Ok(msg) => {
@@ -172,11 +174,13 @@ async fn chat_completions(
         // Non-streaming response.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
-        let result = state
-            .agent_loop
-            .run(&messages, None, &[], tx)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let result = {
+            let agent_loop = state.agent_loop.read().await;
+            agent_loop
+                .run(&messages, None, &[], tx)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        };
 
         // Save assistant message (non-blocking).
         {
@@ -238,7 +242,10 @@ struct CreateSessionRequest {
 // ── Config ─────────────────────────────────────────────────────────────
 
 pub fn config_routes() -> Router<AppState> {
-    Router::new().route("/v1/config", get(get_config))
+    Router::new()
+        .route("/v1/config", get(get_config))
+        .route("/v1/config/provider", put(update_provider))
+        .route("/v1/models", get(list_models))
 }
 
 #[derive(Debug, Serialize)]
@@ -282,7 +289,7 @@ struct SandboxConfigResponse {
 }
 
 async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
-    let c = &state.config;
+    let c = state.config.read().await;
     let tools: Vec<String> = state
         .tool_registry
         .list_names()
@@ -317,6 +324,129 @@ async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     })
 }
 
+// ── Model Switching ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct UpdateProviderRequest {
+    model: String,
+    #[serde(default)]
+    api_base: Option<String>,
+    #[serde(default)]
+    temperature: Option<f32>,
+    #[serde(default)]
+    max_tokens: Option<u32>,
+}
+
+async fn update_provider(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateProviderRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Update config under write lock.
+    {
+        let mut config = state.config.write().await;
+        config.provider.model = req.model.clone();
+        if let Some(api_base) = req.api_base {
+            config.provider.api_base = api_base;
+        }
+        if let Some(temp) = req.temperature {
+            config.provider.temperature = temp;
+        }
+        if let Some(max_tok) = req.max_tokens {
+            config.provider.max_tokens = max_tok;
+        }
+
+        // Save config to disk.
+        config
+            .save()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to save config: {}", e)))?;
+    }
+
+    // Reconstruct AgentLoop with updated config.
+    {
+        let config = state.config.read().await;
+        let new_loop = agent_core::agent_loop::AgentLoop::new(config.clone(), state.tool_registry.clone())
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to create agent loop: {}", e)))?;
+        let mut agent_loop = state.agent_loop.write().await;
+        *agent_loop = new_loop;
+    }
+
+    // Return updated config.
+    let config = state.config.read().await;
+    Ok(Json(serde_json::json!({
+        "model": config.provider.model,
+        "api_base": config.provider.api_base,
+        "temperature": config.provider.temperature,
+        "max_tokens": config.provider.max_tokens,
+    })))
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaModel {
+    name: String,
+    size: Option<u64>,
+    modified_at: Option<String>,
+}
+
+async fn list_models(State(state): State<AppState>) -> impl IntoResponse {
+    let api_base = {
+        let config = state.config.read().await;
+        config.provider.api_base.clone()
+    };
+
+    // Derive Ollama API URL from provider api_base.
+    // e.g. "http://localhost:11434/v1" -> "http://localhost:11434/api/tags"
+    let ollama_url = if let Some(base) = api_base.strip_suffix("/v1") {
+        format!("{}/api/tags", base)
+    } else if let Some(base) = api_base.strip_suffix("/v1/") {
+        format!("{}/api/tags", base)
+    } else {
+        format!("{}/api/tags", api_base.trim_end_matches('/'))
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    match client.get(&ollama_url).send().await {
+        Ok(resp) => match resp.json::<serde_json::Value>().await {
+            Ok(body) => {
+                let models: Vec<OllamaModel> = body
+                    .get("models")
+                    .and_then(|m| m.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|m| OllamaModel {
+                                name: m
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string(),
+                                size: m.get("size").and_then(|s| s.as_u64()),
+                                modified_at: m
+                                    .get("modified_at")
+                                    .and_then(|s| s.as_str())
+                                    .map(String::from),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Json(serde_json::json!({ "models": models })).into_response()
+            }
+            Err(e) => Json(serde_json::json!({
+                "models": [],
+                "error": format!("Failed to parse Ollama response: {}", e)
+            }))
+            .into_response(),
+        },
+        Err(e) => Json(serde_json::json!({
+            "models": [],
+            "error": format!("Ollama not reachable: {}", e)
+        }))
+        .into_response(),
+    }
+}
+
 // ── Session Messages ──────────────────────────────────────────────────
 
 pub fn session_message_routes() -> Router<AppState> {
@@ -330,12 +460,13 @@ async fn get_session_messages(
     // Validate session ID is a UUID to prevent path traversal attacks.
     validate_session_id(&id)?;
 
-    let sessions_dir = state
-        .config
-        .session
-        .history_dir
-        .clone()
-        .unwrap_or_else(|| agent_core::config::AppConfig::data_dir().join("sessions"));
+    let sessions_dir = {
+        let cfg = state.config.read().await;
+        cfg.session
+            .history_dir
+            .clone()
+            .unwrap_or_else(|| agent_core::config::AppConfig::data_dir().join("sessions"))
+    };
 
     let path = sessions_dir.join(format!("{}.json", id));
     let session = agent_core::session::Session::load_from(&path)
@@ -860,12 +991,13 @@ async fn analytics_summary(State(state): State<AppState>) -> impl IntoResponse {
     let mut analytics = agent_analytics::Analytics::default();
 
     // Load and process all sessions from disk.
-    let sessions_dir = state
-        .config
-        .session
-        .history_dir
-        .clone()
-        .unwrap_or_else(|| agent_core::config::AppConfig::data_dir().join("sessions"));
+    let sessions_dir = {
+        let cfg = state.config.read().await;
+        cfg.session
+            .history_dir
+            .clone()
+            .unwrap_or_else(|| agent_core::config::AppConfig::data_dir().join("sessions"))
+    };
 
     for (id, _, _, _) in &sessions {
         let path = sessions_dir.join(format!("{}.json", id));
@@ -916,12 +1048,13 @@ async fn analytics_report(
 
     let mut analytics = agent_analytics::Analytics::default();
 
-    let sessions_dir = state
-        .config
-        .session
-        .history_dir
-        .clone()
-        .unwrap_or_else(|| agent_core::config::AppConfig::data_dir().join("sessions"));
+    let sessions_dir = {
+        let cfg = state.config.read().await;
+        cfg.session
+            .history_dir
+            .clone()
+            .unwrap_or_else(|| agent_core::config::AppConfig::data_dir().join("sessions"))
+    };
 
     for (id, _, _, _) in &sessions {
         let path = sessions_dir.join(format!("{}.json", id));

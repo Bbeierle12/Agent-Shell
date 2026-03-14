@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicerobot/tauri/dev/packages/tauri-schema-generator/schemas/config.schema.json",
+  "productName": "Agent Shell",
+  "version": "0.1.0",
+  "identifier": "com.agent-shell.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Agent Shell",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

@@ -26,10 +26,12 @@ async fn auth_middleware(
     req: Request,
     next: Next,
 ) -> Response {
-    let expected = match &state.config.server.auth_token {
-        Some(t) => t,
+    let config = state.config.read().await;
+    let expected = match &config.server.auth_token {
+        Some(t) => t.clone(),
         None => return next.run(req).await,
     };
+    drop(config);
 
     let auth_header = req
         .headers()
@@ -54,9 +56,11 @@ async fn auth_middleware(
 use axum::extract::State;
 
 /// Build the axum Router with all routes and middleware.
-pub fn build_router(state: AppState) -> Router {
-    let config = &state.config;
-
+///
+/// Takes a snapshot of config at build time for router setup decisions
+/// (CORS, terminal auth gate). Runtime config changes are handled via
+/// the `Arc<RwLock<AppConfig>>` in handlers.
+pub fn build_router(state: AppState, config_snapshot: &AppConfig) -> Router {
     // Protected routes (chat, sessions, plugins) — require auth when token is configured.
     let mut protected = Router::new()
         .merge(routes::chat_routes())
@@ -70,7 +74,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes::terminal_session_routes());
 
     // Terminal routes expose a remote shell — only enable when auth is configured.
-    if config.server.auth_token.is_some() {
+    if config_snapshot.server.auth_token.is_some() {
         protected = protected.merge(routes::terminal_routes());
     } else {
         tracing::warn!(
@@ -99,19 +103,19 @@ pub fn build_router(state: AppState) -> Router {
     app = app.layer(TraceLayer::new_for_http());
 
     // CORS configuration.
-    if config.server.cors {
-        let cors = if config.server.auth_token.is_some() {
+    if config_snapshot.server.cors {
+        let cors = if config_snapshot.server.auth_token.is_some() {
             // Restrictive CORS when auth is enabled.
-            let origins: Vec<String> = if config.server.cors_origins.is_empty() {
+            let origins: Vec<String> = if config_snapshot.server.cors_origins.is_empty() {
                 // Default: only allow the local UI origin.
-                vec![format!("http://localhost:{}", config.server.port)]
+                vec![format!("http://localhost:{}", config_snapshot.server.port)]
             } else {
-                config.server.cors_origins.clone()
+                config_snapshot.server.cors_origins.clone()
             };
             let parsed_origins: Vec<axum::http::HeaderValue> =
                 origins.iter().filter_map(|o| o.parse().ok()).collect();
             CorsLayer::new()
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT])
                 .allow_headers([
                     axum::http::header::CONTENT_TYPE,
                     axum::http::header::AUTHORIZATION,
@@ -177,7 +181,7 @@ pub async fn serve(
     });
 
     // Build and start HTTP server.
-    let router = build_router(state);
+    let router = build_router(state, &config);
     let addr = format!("{}:{}", config.server.host, config.server.port);
     tracing::info!("Starting server on {}", addr);
 
@@ -217,9 +221,10 @@ mod tests {
         let plugin_registry = Arc::new(tokio::sync::RwLock::new(
             agent_plugins::PluginRegistry::new(),
         ));
+        let config_snapshot = config.clone();
         let state = AppState::new(config, registry, plugin_registry, skill_indexer)
             .expect("Failed to create test app state");
-        build_router(state)
+        build_router(state, &config_snapshot)
     }
 
     #[tokio::test]

@@ -38,6 +38,32 @@ export function getConfig(): Promise<ApiConfig> {
   return get<ApiConfig>('/v1/config')
 }
 
+// ── Models ────────────────────────────────────────────────────────────
+export interface OllamaModel {
+  name: string
+  size: number
+  modified_at: string
+}
+
+export function listModels(): Promise<OllamaModel[]> {
+  return get<OllamaModel[]>('/v1/models')
+}
+
+export async function updateProvider(updates: {
+  model: string
+  api_base?: string
+  temperature?: number
+  max_tokens?: number
+}): Promise<ApiConfig> {
+  const res = await fetch('/v1/config/provider', {
+    method: 'PUT',
+    headers: authHeaders(),
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+  return res.json() as Promise<ApiConfig>
+}
+
 // ── Sessions ───────────────────────────────────────────────────────────
 export function listSessions(): Promise<ApiSession[]> {
   return get<ApiSession[]>('/v1/sessions')
