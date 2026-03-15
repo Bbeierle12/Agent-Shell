@@ -21,6 +21,10 @@ pub trait Tool: Send + Sync {
     async fn execute(&self, args: Value) -> Result<String, AgentError>;
 }
 
+/// Maximum size (in bytes) for any single tool output. Outputs exceeding
+/// this limit are truncated with a suffix indicating the truncation.
+const MAX_TOOL_OUTPUT_BYTES: usize = 64 * 1024; // 64 KiB
+
 /// Central registry for all available tools.
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn Tool>>,
@@ -79,8 +83,11 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name with the given arguments.
+    ///
+    /// Tool output is truncated to `MAX_TOOL_OUTPUT_BYTES` to prevent a single
+    /// misbehaving tool from blowing up the context window or API costs.
     pub async fn execute(&self, tool_name: &str, tool_call_id: &str, args: Value) -> ToolOutput {
-        match self.tools.get(tool_name) {
+        let mut output = match self.tools.get(tool_name) {
             Some(tool) => match tool.execute(args).await {
                 Ok(content) => ToolOutput {
                     tool_call_id: tool_call_id.to_string(),
@@ -98,7 +105,25 @@ impl ToolRegistry {
                 content: format!("Tool not found: {}", tool_name),
                 is_error: true,
             },
+        };
+
+        // Safety net: truncate oversized output to protect the context window.
+        if output.content.len() > MAX_TOOL_OUTPUT_BYTES {
+            let truncation_msg = format!(
+                "\n\n[Output truncated: {} bytes total, showing first {}]",
+                output.content.len(),
+                MAX_TOOL_OUTPUT_BYTES
+            );
+            // Find a valid UTF-8 boundary at or before the limit.
+            let mut boundary = MAX_TOOL_OUTPUT_BYTES;
+            while !output.content.is_char_boundary(boundary) && boundary > 0 {
+                boundary -= 1;
+            }
+            output.content.truncate(boundary);
+            output.content.push_str(&truncation_msg);
         }
+
+        output
     }
 
     /// Number of registered tools.

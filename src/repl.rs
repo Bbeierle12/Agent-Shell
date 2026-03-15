@@ -57,7 +57,7 @@ pub async fn run(
         session_manager.create_session(name)?;
     }
 
-    let agent_loop = AgentLoop::new(config.clone(), tool_registry.clone())?;
+    let agent_loop = Arc::new(AgentLoop::new(config.clone(), tool_registry.clone())?);
 
     // Set up rustyline.
     let rl_config = RlConfig::builder().auto_add_history(true).build();
@@ -116,24 +116,18 @@ pub async fn run(
                 // Create event channel.
                 let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
 
-                // Run agent in background.
-                let _agent_loop_ref = &agent_loop;
-
-                // We need to run the agent and consume events concurrently.
+                // Run agent in background, reusing the shared AgentLoop
+                // so that provider health tracking persists across messages.
                 let agent_handle = {
+                    let agent = agent_loop.clone();
                     let messages = messages.clone();
                     let allowlist = allowlist.clone();
                     let denylist = denylist.clone();
                     let tx = tx.clone();
-                    tokio::spawn({
-                        let tool_registry = tool_registry.clone();
-                        let config = config.clone();
-                        async move {
-                            let agent = AgentLoop::new(config, tool_registry)?;
-                            agent
-                                .run(&messages, allowlist.as_deref(), &denylist, tx)
-                                .await
-                        }
+                    tokio::spawn(async move {
+                        agent
+                            .run(&messages, allowlist.as_deref(), &denylist, tx)
+                            .await
                     })
                 };
                 drop(tx); // Drop our copy so the channel closes when agent is done.
@@ -175,10 +169,13 @@ pub async fn run(
                 }
                 println!(); // Newline after response.
 
-                // Wait for agent to finish and save the response.
+                // Wait for agent to finish and save all messages (including
+                // intermediate tool calls and results) for complete history.
                 match agent_handle.await {
-                    Ok(Ok(msg)) => {
-                        session_manager.push_message(msg)?;
+                    Ok(Ok(result)) => {
+                        for msg in result.messages {
+                            session_manager.push_message(msg)?;
+                        }
                     }
                     Ok(Err(e)) => {
                         eprintln!("\x1b[0;31mAgent error: {}\x1b[0m", e);

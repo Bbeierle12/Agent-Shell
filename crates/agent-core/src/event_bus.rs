@@ -33,15 +33,18 @@ pub enum AgentEventType {
 }
 
 /// A single event published on the bus.
+///
+/// Named `PlatformEvent` to distinguish from the streaming `AgentEvent` enum
+/// in `types.rs` which represents real-time LLM/tool events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentEvent {
+pub struct PlatformEvent {
     pub id: Uuid,
     pub event_type: AgentEventType,
     pub payload: serde_json::Value,
     pub timestamp: DateTime<Utc>,
 }
 
-impl AgentEvent {
+impl PlatformEvent {
     /// Create a new event with the given type and payload.
     pub fn new(event_type: AgentEventType, payload: serde_json::Value) -> Self {
         Self {
@@ -56,7 +59,7 @@ impl AgentEvent {
 /// Central event bus for the agent platform.
 #[derive(Clone)]
 pub struct EventBus {
-    sender: broadcast::Sender<AgentEvent>,
+    sender: broadcast::Sender<PlatformEvent>,
 }
 
 impl EventBus {
@@ -75,13 +78,13 @@ impl EventBus {
     /// Publish an event to all subscribers.
     pub fn publish(
         &self,
-        event: AgentEvent,
-    ) -> Result<usize, broadcast::error::SendError<AgentEvent>> {
+        event: PlatformEvent,
+    ) -> Result<usize, broadcast::error::SendError<PlatformEvent>> {
         self.sender.send(event)
     }
 
     /// Subscribe to all events.
-    pub fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<PlatformEvent> {
         self.sender.subscribe()
     }
 
@@ -107,7 +110,7 @@ impl Default for EventBus {
 
 /// A subscriber that only yields events matching a set of [`AgentEventType`]s.
 pub struct FilteredSubscriber {
-    receiver: broadcast::Receiver<AgentEvent>,
+    receiver: broadcast::Receiver<PlatformEvent>,
     filter: HashSet<AgentEventType>,
 }
 
@@ -115,7 +118,7 @@ impl FilteredSubscriber {
     /// Receive the next event that matches the filter.
     ///
     /// Events that do not match are silently skipped.
-    pub async fn recv(&mut self) -> Result<AgentEvent, broadcast::error::RecvError> {
+    pub async fn recv(&mut self) -> Result<PlatformEvent, broadcast::error::RecvError> {
         loop {
             let event = self.receiver.recv().await?;
             if self.filter.contains(&event.event_type) {
@@ -134,7 +137,7 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
 
-        let event = AgentEvent::new(
+        let event = PlatformEvent::new(
             AgentEventType::SessionStarted,
             serde_json::json!({"session_id": "s1"}),
         );
@@ -151,7 +154,7 @@ mod tests {
         let bus = EventBus::new();
         let mut filtered = bus.subscribe_filtered(vec![AgentEventType::ToolCompleted]);
 
-        let event = AgentEvent::new(
+        let event = PlatformEvent::new(
             AgentEventType::ToolCompleted,
             serde_json::json!({"tool": "shell", "exit_code": 0}),
         );
@@ -167,13 +170,13 @@ mod tests {
         let mut filtered = bus.subscribe_filtered(vec![AgentEventType::Error]);
 
         // Publish non-matching then matching.
-        bus.publish(AgentEvent::new(
+        bus.publish(PlatformEvent::new(
             AgentEventType::MessageSent,
             serde_json::json!({}),
         ))
         .unwrap();
         let error_event =
-            AgentEvent::new(AgentEventType::Error, serde_json::json!({"msg": "timeout"}));
+            PlatformEvent::new(AgentEventType::Error, serde_json::json!({"msg": "timeout"}));
         let error_id = error_event.id;
         bus.publish(error_event).unwrap();
 
@@ -202,12 +205,12 @@ mod tests {
         let bus = EventBus::with_capacity(2);
         let mut rx = bus.subscribe();
 
-        bus.publish(AgentEvent::new(
+        bus.publish(PlatformEvent::new(
             AgentEventType::ScheduleFired,
             serde_json::json!({}),
         ))
         .unwrap();
-        bus.publish(AgentEvent::new(
+        bus.publish(PlatformEvent::new(
             AgentEventType::ProfileChanged,
             serde_json::json!({}),
         ))
@@ -221,12 +224,12 @@ mod tests {
 
     #[test]
     fn test_event_serialization() {
-        let event = AgentEvent::new(
+        let event = PlatformEvent::new(
             AgentEventType::SecretDetected,
             serde_json::json!({"line": 42}),
         );
         let json = serde_json::to_string(&event).unwrap();
-        let parsed: AgentEvent = serde_json::from_str(&json).unwrap();
+        let parsed: PlatformEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.id, event.id);
         assert_eq!(parsed.event_type, AgentEventType::SecretDetected);
     }

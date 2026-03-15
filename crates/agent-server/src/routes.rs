@@ -133,9 +133,11 @@ async fn chat_completions(
             let agent_loop = agent_loop_lock.read().await;
             let result = agent_loop.run(&messages, None, &[], tx.clone()).await;
             match result {
-                Ok(msg) => {
+                Ok(turn_result) => {
                     let mut sm = session_manager.write().await;
-                    let _ = sm.push_message_async(msg).await;
+                    for msg in turn_result.messages {
+                        let _ = sm.push_message_async(msg).await;
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(AgentEvent::Error(e.to_string()));
@@ -182,20 +184,23 @@ async fn chat_completions(
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         };
 
-        // Save assistant message (non-blocking).
+        // Save all messages (including intermediate tool calls) for complete history.
+        let final_msg = result.final_message().clone();
         {
             let mut sm = state.session_manager.write().await;
-            let _ = sm.push_message_async(result.clone()).await;
+            for msg in result.messages {
+                let _ = sm.push_message_async(msg).await;
+            }
         }
 
         let response = ChatResponse {
-            id: result.id.clone(),
+            id: final_msg.id.clone(),
             session_id: active_session_id,
             choices: vec![ChatChoice {
                 index: 0,
                 message: ChatMessage {
                     role: "assistant".into(),
-                    content: result.content.clone(),
+                    content: final_msg.content.clone(),
                 },
                 finish_reason: "stop".into(),
             }],

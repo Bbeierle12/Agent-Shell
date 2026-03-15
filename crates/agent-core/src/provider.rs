@@ -43,6 +43,10 @@ struct ProviderHealth {
 }
 
 /// Multi-provider chain with health tracking and automatic failover.
+///
+/// Uses `std::sync::RwLock` (not `tokio::sync::RwLock`) because health
+/// reads/writes are brief and never held across `.await` points. If
+/// refactoring, ensure the lock guard is dropped before any `.await`.
 pub struct ProviderChain {
     providers: Vec<ResolvedProvider>,
     health: RwLock<HashMap<String, ProviderHealth>>,

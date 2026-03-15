@@ -182,6 +182,10 @@ pub(crate) fn validate_url_not_internal(raw_url: &str) -> Result<ValidatedUrl, A
     }
 
     // For domain names, perform DNS resolution and check ALL resolved IPs.
+    // NOTE: This uses blocking DNS resolution (std::net::ToSocketAddrs).
+    // In a high-concurrency scenario, consider wrapping with
+    // tokio::task::spawn_blocking or using tokio::net::lookup_host in an
+    // async version of this function.
     let mut safe_addrs = Vec::new();
     if let Some(url::Host::Domain(domain)) = parsed.host() {
         let domain_owned = domain.to_string();

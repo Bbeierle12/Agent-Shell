@@ -19,14 +19,14 @@ pub mod tool_loop;
 pub mod tool_registry;
 pub mod types;
 
-pub use agent_loop::AgentLoop;
+pub use agent_loop::{AgentLoop, AgentTurnResult};
 pub use capture::HookBackend;
 pub use claude_detect::ClaudeDetector;
 pub use command_parser::CommandParser;
 pub use config::AppConfig;
 pub use context::ContextLinker;
 pub use error::AgentError;
-pub use event_bus::EventBus;
+pub use event_bus::{EventBus, PlatformEvent};
 pub use git_linker::GitLinker;
 pub use git_tracker::GitTracker;
 pub use profiles::ProfileConfig;
